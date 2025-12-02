@@ -1,0 +1,51 @@
+
+# Один ключ Groq
+# GROQ_API_KEY=your_groq_api_key_here
+
+# Несколько ключей Groq через запятую
+# GROQ_API_KEYS="key1,key2,key3"
+
+# Основная модель
+MODEL=openai/gpt-oss-120b
+
+# Список fallback-моделей (через запятую)
+MODEL_FALLBACKS="llama-3.3-70b-versatile,openai/gpt-oss-120b,qwen/qwen3-32b,meta-llama/llama-4-maverick-17b-128e-instruct,meta-llama/llama-4-scout-17b-16e-instruct,openai/gpt-oss-20b,openai/gpt-oss-safeguard-20b,moonshotai/kimi-k2-instruct-0905,moonshotai/kimi-k2-instruct,allam-2-7b,llama-3.1-8b-instant,groq/compound,groq/compound-mini"
+
+# Языки перевода
+SOURCE_LANG=English
+TARGET_LANG=Russian
+
+# Основной датафрейм SQLite
+FINAL_RECORDS_PATH=/path/to/parallel_pairs_stream.sqlite
+
+# Датасет для валидации перевода
+TRANSLATION_EVAL_PATH=/path/to/translation_eval.pkl
+
+# Исходные файлы локализации
+INPUT_DIR=./mod/localisation
+
+# Куда писать переводы (создаётся зеркальная структура)
+OUTPUT_DIR=./mod_localised
+
+# Глоб для выбора файлов
+FILE_GLOB=**/*.yml
+
+# Режим "ничего не писать, только логи"
+DRY_RUN=false
+
+# Токены и температура модели
+MAX_TOKENS=2048
+TEMPERATURE=0.2
+
+# Частота запросов в секунду
+RATE_LIMIT_TPS=2
+
+# Размер батча
+BATCH_SIZE=10
+
+# Файл кэша переводов
+CACHE_PATH=.translation_cache.json
+
+DB_PATH=/path/to/parallel_pairs_stream.sqlite
+DB_SOURCE_LANG=en
+DB_TARGET_LANG=ru

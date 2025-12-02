@@ -1,0 +1,7 @@
+unbabel-comet
+pandas
+gdown
+python-dotenv>=1.0.0
+groq>=0.11.0
+tqdm>=4.66.0
+
