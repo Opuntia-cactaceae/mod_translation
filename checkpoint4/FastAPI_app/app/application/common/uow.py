@@ -1,0 +1,13 @@
+from __future__ import annotations
+from typing import Protocol
+from app.application.common.ports import UsersRepository, TranslationsRepository, RefreshTokensRepository
+
+class UnitOfWork(Protocol):
+    users: UsersRepository
+    translations: TranslationsRepository
+    refresh_tokens: RefreshTokensRepository
+
+    async def __aenter__(self): ...
+    async def __aexit__(self, exc_type, exc, tb): ...
+    async def commit(self) -> None: ...
+    async def rollback(self) -> None: ...

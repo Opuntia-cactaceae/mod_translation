@@ -1,0 +1,9 @@
+APP_ENV=dev
+APP_DATABASE_URL=postgresql+asyncpg://user@localhost:5432/app
+APP_JWT_SECRET=dev-secret
+APP_GROQ_MODELS=llama-3.3-70b-versatile,openai/gpt-oss-120b,qwen/qwen3-32b,meta-llama/llama-4-maverick-17b-128e-instruct
+APP_GROQ_LANGUAGES=en,ru,de,fr,es,it,pt,zh,ja,ko
+APP_GROQ_MAX_ATTEMPTS=5
+APP_GROQ_BACKOFF_BASE_SECONDS=0.7
+APP_GROQ_BACKOFF_MAX_SECONDS=20
+APP_GROQ_RATE_LIMIT_TPS=2
