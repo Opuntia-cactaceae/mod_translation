@@ -326,7 +326,21 @@ def compute_comet_metric(
         if device:
             model.to(device)
 
-        predictions = model.predict(data, batch_size=32, device=device)
+        #пупупупупу
+        predict_args = {"samples": data, "batch_size": 32}
+        if device:
+            import inspect
+
+            sig = inspect.signature(model.predict)
+            params = sig.parameters
+
+            if 'device' in params:
+                predict_args['device'] = device
+
+            elif 'devices' in params:
+                predict_args['devices'] = 1
+
+        predictions = model.predict(**predict_args)
 
         comet_score = predictions["system_score"]
         seg_scores = predictions["seg_scores"] if "seg_scores" in predictions else []
