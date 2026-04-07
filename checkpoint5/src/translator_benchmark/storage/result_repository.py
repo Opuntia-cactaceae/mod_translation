@@ -136,25 +136,30 @@ def load_experiment_translations(db_path: str, experiment_id: str) -> List[Dict[
         experiment_id: Experiment identifier.
 
     Returns:
-        List of dicts with source, reference, candidate texts.
+        List of dicts with row_id, source, reference, candidate texts.
     """
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT source_text, reference_text, final_translation
+            SELECT row_id, source_text, reference_text, final_translation
             FROM results
-            WHERE experiment_id = ? AND final_translation IS NOT NULL
+            WHERE experiment_id = ?
+              AND final_translation IS NOT NULL
+              AND reference_text IS NOT NULL
+              AND reference_text != ''
+            ORDER BY row_id
             """,
             (experiment_id,),
         )
         rows = cursor.fetchall()
         return [
             {
-                "source_text": row[0],
-                "reference_text": row[1],
-                "candidate_text": row[2],
+                "row_id": row[0],
+                "source_text": row[1],
+                "reference_text": row[2],
+                "candidate_text": row[3],
             }
             for row in rows
         ]

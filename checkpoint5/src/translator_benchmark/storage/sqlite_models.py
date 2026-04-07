@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS classic_metrics (
 );
 """
 
+CREATE_CLASSIC_COMET_SEGMENT_SCORES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS classic_comet_segment_scores (
+    experiment_id TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    comet_score REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (experiment_id, row_id)
+);
+"""
+
 CREATE_CACHE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS cache (
     cache_key TEXT PRIMARY KEY,

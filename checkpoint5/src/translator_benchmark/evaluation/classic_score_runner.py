@@ -3,6 +3,7 @@ import sqlite3
 from typing import Dict, Any, List, Optional
 
 from .classic_metrics import compute_classic_metrics_with_comet
+from ..storage.classic_metric_repository import save_classic_comet_segment_scores
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 def load_successful_translations(
     db_path: str,
     experiment_id: str
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, Any]]:
     """
     Загружаем успешно переведенные строки
 
@@ -19,14 +20,14 @@ def load_successful_translations(
         experiment_id: Experiment identifier.
 
     Returns:
-        List of dictionaries with source, reference, and candidate texts.
+        List of dictionaries with row_id, source, reference, and candidate texts.
     """
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT source_text, reference_text, final_translation
+            SELECT row_id, source_text, reference_text, final_translation
             FROM results
             WHERE experiment_id = ?
               AND reference_text IS NOT NULL
@@ -40,8 +41,9 @@ def load_successful_translations(
         rows = cursor.fetchall()
 
         translations = []
-        for source, reference, candidate in rows:
+        for row_id, source, reference, candidate in rows:
             translations.append({
+                "row_id": row_id,
                 "source_text": source if source is not None else "",
                 "reference_text": reference if reference is not None else "",
                 "candidate_text": candidate if candidate is not None else "",
@@ -91,11 +93,13 @@ def evaluate_classic_metrics(
 
     logger.info(f"Found {len(translations)} successful translations for evaluation")
 
+    row_ids = []
     sources = []
     references = []
     candidates = []
 
     for item in translations:
+        row_ids.append(item["row_id"])
         sources.append(item["source_text"])
         references.append(item["reference_text"])
         candidates.append(item["candidate_text"])
@@ -130,6 +134,25 @@ def evaluate_classic_metrics(
 
         if metrics.get("comet_available"):
             logger.info(f"COMET computed: {metrics['comet'].get('score', 'N/A'):.4f}")
+            # Сохраняем per-segment COMET scores, если они есть
+            comet_result = metrics["comet"]
+            if comet_result and "scores" in comet_result and comet_result["scores"]:
+                seg_scores = comet_result["scores"]
+                # Фильтруем valid triples (как в compute_comet_metric) для сопоставления с row_ids
+                valid_row_ids = []
+                for idx, (src, ref, hyp) in enumerate(zip(sources, references, candidates)):
+                    if src and ref and hyp and src.strip() and ref.strip() and hyp.strip():
+                        valid_row_ids.append(row_ids[idx])
+                # Проверяем соответствие количества
+                if len(valid_row_ids) == len(seg_scores):
+                    rows_to_save = list(zip(valid_row_ids, seg_scores))
+                    save_classic_comet_segment_scores(db_path, experiment_id, rows_to_save)
+                    logger.info(f"Saved {len(rows_to_save)} per-segment COMET scores")
+                else:
+                    logger.warning(
+                        f"Mismatch between valid rows ({len(valid_row_ids)}) and scores ({len(seg_scores)}). "
+                        f"Skipping per-segment score saving."
+                    )
 
         return result
 

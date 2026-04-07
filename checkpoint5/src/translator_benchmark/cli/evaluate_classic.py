@@ -3,6 +3,7 @@ import argparse
 import logging
 from ..config.settings import load_settings
 from ..evaluation.classic_score_runner import compute_and_save_classic_metrics
+from ..storage.db import init_benchmark_db
 #здесь описание команды старта анализа переведенных строчек метриками переводов
 
 def evaluate_classic_command(experiment_id: str, with_comet: bool = False) -> int:
@@ -22,6 +23,7 @@ def evaluate_classic_command(experiment_id: str, with_comet: bool = False) -> in
     try:
         settings = load_settings()
         db_path = settings["benchmark_db_path"]
+        init_benchmark_db(db_path)
 
         print(f"Evaluating classic metrics for experiment: {experiment_id}")
         if with_comet:

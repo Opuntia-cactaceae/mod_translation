@@ -104,6 +104,68 @@ def delete_classic_metrics(db_path: str, experiment_id: str) -> None:
         conn.close()
 
 
+def save_classic_comet_segment_scores(db_path: str, experiment_id: str, rows: list[tuple[int, float]]) -> None:
+    """
+    Args:
+        db_path: Path to SQLite database.
+        experiment_id: Experiment identifier.
+        rows: List of (row_id, comet_score) tuples.
+    """
+    if not rows:
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        # Используем INSERT OR REPLACE на случай если scores уже есть
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO classic_comet_segment_scores
+            (experiment_id, row_id, comet_score, created_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            [(experiment_id, row_id, score) for row_id, score in rows]
+        )
+        conn.commit()
+        logger.info(f"Saved {len(rows)} COMET segment scores for experiment {experiment_id}")
+    except sqlite3.OperationalError as e:
+        # Если таблицы нет — игнорируем (старая схема БД)
+        logger.warning(f"Table classic_comet_segment_scores may not exist: {e}")
+    finally:
+        conn.close()
+
+
+def load_classic_comet_segment_scores(db_path: str, experiment_id: str) -> dict[int, float]:
+    """
+    Args:
+        db_path: Path to SQLite database.
+        experiment_id: Experiment identifier.
+
+    Returns:
+        Dictionary mapping row_id -> comet_score. Empty if no scores found or table doesn't exist.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT row_id, comet_score
+            FROM classic_comet_segment_scores
+            WHERE experiment_id = ?
+            ORDER BY row_id
+            """,
+            (experiment_id,)
+        )
+        rows = cursor.fetchall()
+        return {row_id: score for row_id, score in rows}
+    except sqlite3.OperationalError as e:
+        # Таблицы нет — возвращаем пустой словарь
+        logger.debug(f"Table classic_comet_segment_scores may not exist: {e}")
+        return {}
+    finally:
+        conn.close()
+
+
 def list_experiments_with_classic_metrics(db_path: str) -> list[str]:
     """
     Args:

@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 from ..config.schema import EvaluationConfig
 from ..storage.result_repository import load_experiment_translations
 from ..storage.metric_repository import save_experiment_metrics
+from ..storage.classic_metric_repository import load_classic_comet_segment_scores
 #такое часто будет, для того чтобы меж компами таскать нормально
 #(можно было изначально написать чтоб не разваливалось но это не мой подход)
 try:
@@ -96,6 +97,26 @@ def evaluate_experiment(
 
     logger.info(f"Loaded {len(translations)} translations for evaluation")
 
+    # Пытаемся загрузить предварительно вычисленные COMET scores из classic evaluation
+    if precomputed_text_scores is None:
+        scores_dict = load_classic_comet_segment_scores(db_path, experiment_id)
+        if scores_dict:
+            logger.info(f"Loaded {len(scores_dict)} precomputed COMET segment scores")
+            # Строим precomputed_text_scores в порядке translations
+            precomputed_text_scores = []
+            for item in translations:
+                row_id = item.get("row_id")
+                score = scores_dict.get(row_id)
+                precomputed_text_scores.append(score)  # может быть None если score отсутствует
+            # Проверяем, есть ли хотя бы один не-None score
+            if any(s is not None for s in precomputed_text_scores):
+                logger.info(f"Using precomputed COMET scores for {sum(1 for s in precomputed_text_scores if s is not None)} segments")
+            else:
+                logger.info("No valid precomputed scores found, will compute COMET from scratch")
+                precomputed_text_scores = None
+        else:
+            logger.info("No precomputed COMET segment scores found in database")
+
     source_texts = []
     reference_texts = []
     candidate_texts = []
@@ -105,12 +126,14 @@ def evaluate_experiment(
         reference_texts.append(item.get("reference_text", ""))
         candidate_texts.append(item.get("candidate_text", ""))
 
-    if comet_scorer is None:
+    if comet_scorer is None and precomputed_text_scores is None:
         comet_scorer = _create_comet_scorer(evaluation_config.comet_model_path)
         if comet_scorer is not None:
             logger.info("Using auto-created COMET scorer for text quality evaluation")
         else:
             logger.warning("COMET scorer not available, text scores will be zero")
+    elif precomputed_text_scores is not None:
+        logger.info("Using precomputed COMET scores, COMET scorer not needed")
 
     if compute_quality_metrics is None:
         logger.error("Quality metrics computation not available (missing dependencies)")

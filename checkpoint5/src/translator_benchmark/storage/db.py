@@ -16,6 +16,7 @@ def init_benchmark_db(db_path: str) -> None:
         cursor.execute(sqlite_models.CREATE_METRICS_TABLE_SQL)
         cursor.execute(sqlite_models.CREATE_API_METRICS_TABLE_SQL)
         cursor.execute(sqlite_models.CREATE_CLASSIC_METRICS_TABLE_SQL)
+        cursor.execute(sqlite_models.CREATE_CLASSIC_COMET_SEGMENT_SCORES_TABLE_SQL)
         cursor.execute(sqlite_models.CREATE_CACHE_TABLE_SQL)
         try:
             cursor.execute("ALTER TABLE classic_metrics ADD COLUMN comet_model_name TEXT")
