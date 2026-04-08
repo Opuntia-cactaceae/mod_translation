@@ -111,7 +111,7 @@ def evaluate_experiment(
             # Проверяем, есть ли хотя бы один не-None score
             if any(s is not None for s in precomputed_text_scores):
                 logger.info(f"Using precomputed COMET scores for {sum(1 for s in precomputed_text_scores if s is not None)} segments")
-            else:
+            else: #да почемуммммууууу оно не работает тооооо
                 logger.info("No valid precomputed scores found, will compute COMET from scratch")
                 precomputed_text_scores = None
         else:
