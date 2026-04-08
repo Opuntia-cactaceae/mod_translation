@@ -275,6 +275,7 @@ def compute_comet_metric(
         - model: model name used
         - num_scored: number of rows scored
         - scores: list of per-sentence scores (optional)
+        - valid_indices: list of original indices that passed filtering
 
     Raises:
         ImportError: If COMET not installed.
@@ -295,13 +296,15 @@ def compute_comet_metric(
     valid_sources = []
     valid_refs = []
     valid_hyps = []
+    valid_indices = []
 
-    for src, ref, hyp in zip(sources, references, hypotheses):
+    for idx, (src, ref, hyp) in enumerate(zip(sources, references, hypotheses)):
         if src and ref and hyp and src.strip() and ref.strip() and hyp.strip():
             valid_triples.append((src, ref, hyp))
             valid_sources.append(src)
             valid_refs.append(ref)
             valid_hyps.append(hyp)
+            valid_indices.append(idx)
 
     num_scored = len(valid_triples)
     if num_scored == 0:
@@ -311,6 +314,7 @@ def compute_comet_metric(
             "model": model_name,
             "num_scored": 0,
             "scores": [],
+            "valid_indices": [],
         }
 
     logger.info(f"Computing COMET metric for {num_scored} valid triples using {model_name}")
@@ -328,28 +332,38 @@ def compute_comet_metric(
 
         #пупупупупу
         predict_args = {"samples": data, "batch_size": 32}
+        import inspect
+        sig = inspect.signature(model.predict)
+        params = sig.parameters
+
         if device:
-            import inspect
-
-            sig = inspect.signature(model.predict)
-            params = sig.parameters
-
             if 'device' in params:
                 predict_args['device'] = device
-
             elif 'devices' in params:
                 predict_args['devices'] = 1
+
+        if 'return_sentence_level_scores' in params:
+            predict_args['return_sentence_level_scores'] = True
 
         predictions = model.predict(**predict_args)
 
         comet_score = predictions["system_score"]
-        seg_scores = predictions["seg_scores"] if "seg_scores" in predictions else []
+        seg_scores = predictions.get("seg_scores", predictions.get("scores", []))
+        if seg_scores is None:
+            seg_scores = []
+        elif not isinstance(seg_scores, list):
+            logger.warning(f"COMET per-segment scores is not a list: {type(seg_scores)}")
+            seg_scores = []
+
+        if not seg_scores:
+            logger.debug(f"COMET per-segment scores empty; keys in predictions: {list(predictions.keys())}")
 
         return {
             "score": comet_score,
             "model": model_name,
             "num_scored": num_scored,
             "scores": seg_scores,
+            "valid_indices": valid_indices,
         }
     except Exception as e:
         logger.error(f"Error computing COMET metric: {e}")

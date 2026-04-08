@@ -134,23 +134,30 @@ def evaluate_classic_metrics(
 
         if metrics.get("comet_available"):
             logger.info(f"COMET computed: {metrics['comet'].get('score', 'N/A'):.4f}")
-            # Сохраняем per-segment COMET scores, если они есть
             comet_result = metrics["comet"]
             if comet_result and "scores" in comet_result and comet_result["scores"]:
                 seg_scores = comet_result["scores"]
-                # Фильтруем valid triples (как в compute_comet_metric) для сопоставления с row_ids
-                valid_row_ids = []
-                for idx, (src, ref, hyp) in enumerate(zip(sources, references, candidates)):
-                    if src and ref and hyp and src.strip() and ref.strip() and hyp.strip():
-                        valid_row_ids.append(row_ids[idx])
-                # Проверяем соответствие количества
-                if len(valid_row_ids) == len(seg_scores):
+                valid_indices = comet_result.get("valid_indices")
+                if valid_indices is None:
+                    logger.warning("COMET result missing 'valid_indices', using fallback filtering")
+                    valid_indices = []
+                    for idx, (src, ref, hyp) in enumerate(zip(sources, references, candidates)):
+                        if src and ref and hyp and src.strip() and ref.strip() and hyp.strip():
+                            valid_indices.append(idx)
+
+                logger.debug(
+                    f"COMET per-segment scores: total rows={len(sources)}, "
+                    f"valid indices={len(valid_indices)}, scores={len(seg_scores)}"
+                )
+
+                if len(valid_indices) == len(seg_scores):
+                    valid_row_ids = [row_ids[idx] for idx in valid_indices]
                     rows_to_save = list(zip(valid_row_ids, seg_scores))
                     save_classic_comet_segment_scores(db_path, experiment_id, rows_to_save)
                     logger.info(f"Saved {len(rows_to_save)} per-segment COMET scores")
                 else:
                     logger.warning(
-                        f"Mismatch between valid rows ({len(valid_row_ids)}) and scores ({len(seg_scores)}). "
+                        f"Mismatch between valid indices ({len(valid_indices)}) and scores ({len(seg_scores)}). "
                         f"Skipping per-segment score saving."
                     )
 
