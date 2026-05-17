@@ -1,0 +1,205 @@
+{
+  "profiles": {
+    "3f72095a-e938-4c38-9fc3-b26fc02758f8": {
+      "id": "3f72095a-e938-4c38-9fc3-b26fc02758f8",
+      "name": "API Created",
+      "description": "",
+      "game": "generic",
+      "file_handler": "json",
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "batch_size": 10,
+        "runtime": {
+          "provider": "groq",
+          "model": "llama-3.3-70b-versatile"
+        },
+        "prompt": {
+          "profile_name": "strict_json_batch"
+        },
+        "protection": {
+          "strategy": "none"
+        },
+        "validation": {
+          "validator_name": "json_batch"
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-09T20:40:46.463568+00:00",
+      "updated_at": "2026-05-09T20:40:46.463568+00:00"
+    },
+    "d25e9e53-cffc-4b67-87b2-4a1ce78fc354": {
+      "id": "d25e9e53-cffc-4b67-87b2-4a1ce78fc354",
+      "name": "Updated",
+      "description": "",
+      "game": "generic",
+      "file_handler": null,
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "runtime": {
+          "provider": "groq",
+          "model": "x"
+        },
+        "prompt": {
+          "profile_name": "simple_single"
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-09T20:40:46.545478+00:00",
+      "updated_at": "2026-05-09T20:40:46.548773+00:00"
+    },
+    "44256bee-b4d6-4923-9030-9543f6579e43": {
+      "id": "44256bee-b4d6-4923-9030-9543f6579e43",
+      "name": "Copied System",
+      "description": "Stellaris localisation with strict JSON batch prompt, legacy game token protection, and JSON batch validation.",
+      "game": "stellaris",
+      "file_handler": "stellaris_localisation",
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "batch_size": 20,
+        "use_cache": true,
+        "save_raw_responses": false,
+        "runtime": {
+          "provider": "groq",
+          "model": "llama-3.3-70b-versatile",
+          "temperature": 0.0,
+          "max_completion_tokens": 4096,
+          "timeout_sec": 60,
+          "max_retries": 3
+        },
+        "prompt": {
+          "profile_name": "strict_json_stellaris"
+        },
+        "protection": {
+          "strategy": "legacy_game_tokens",
+          "options": {}
+        },
+        "validation": {
+          "validator_name": "json_batch",
+          "options": {},
+          "allow_fallback_on_json_error": true
+        },
+        "output": {
+          "preserve_relative_path": true
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-09T20:40:46.724628+00:00",
+      "updated_at": "2026-05-09T20:40:46.724628+00:00"
+    },
+    "354d337b-fa53-41f6-b518-f6ad9caa8a2a": {
+      "id": "354d337b-fa53-41f6-b518-f6ad9caa8a2a",
+      "name": "Stellaris EN→RU strict",
+      "description": "Stellaris localisation with strict JSON batch prompt, legacy game token protection, and JSON batch validation.",
+      "game": "stellaris",
+      "file_handler": "stellaris_localisation",
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "batch_size": 20,
+        "use_cache": true,
+        "save_raw_responses": false,
+        "runtime": {
+          "provider": "groq",
+          "model": "llama-3.3-70b-versatile",
+          "temperature": 0.0,
+          "max_completion_tokens": 4096,
+          "timeout_sec": 60,
+          "max_retries": 3
+        },
+        "prompt": {
+          "profile_name": "strict_json_stellaris"
+        },
+        "protection": {
+          "strategy": "legacy_game_tokens",
+          "options": {}
+        },
+        "validation": {
+          "validator_name": "json_batch",
+          "options": {},
+          "allow_fallback_on_json_error": true
+        },
+        "output": {
+          "preserve_relative_path": true
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-09T20:40:46.887454+00:00",
+      "updated_at": "2026-05-09T20:40:46.887454+00:00"
+    },
+    "f8edadbb-4670-4578-8ca8-61f571280ddf": {
+      "id": "f8edadbb-4670-4578-8ca8-61f571280ddf",
+      "name": "йкм",
+      "description": "",
+      "game": "stellaris",
+      "file_handler": null,
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "batch_size": 10,
+        "use_cache": true,
+        "runtime": {
+          "provider": "deepseek",
+          "model": "ыгыг",
+          "temperature": 0
+        },
+        "prompt": {
+          "profile_name": "simple_single"
+        },
+        "protection": {
+          "strategy": ""
+        },
+        "validation": {
+          "validator_name": ""
+        },
+        "output": {
+          "filename_suffix": "_translated",
+          "preserve_relative_path": true,
+          "overwrite": false,
+          "backup": true
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-10T16:22:36.775638+00:00",
+      "updated_at": "2026-05-10T16:22:36.775638+00:00"
+    },
+    "47e2b0c9-6cf6-497f-bd6b-0e5f6c942bbc": {
+      "id": "47e2b0c9-6cf6-497f-bd6b-0e5f6c942bbc",
+      "name": "My profile",
+      "description": "",
+      "game": "stellaris",
+      "file_handler": "stellaris_localisation",
+      "config": {
+        "src_lang": "en",
+        "dst_lang": "ru",
+        "batch_size": 10,
+        "use_cache": true,
+        "runtime": {
+          "provider": "groq",
+          "model": "llama-3.3-70b-versatile",
+          "temperature": 0
+        },
+        "prompt": {
+          "profile_name": "json_batch"
+        },
+        "protection": {
+          "strategy": "legacy_game_tokens"
+        },
+        "validation": {
+          "validator_name": "composite"
+        },
+        "output": {
+          "filename_suffix": "_translated",
+          "preserve_relative_path": true,
+          "overwrite": false,
+          "backup": true
+        }
+      },
+      "is_system": false,
+      "created_at": "2026-05-12T16:28:41.776134+00:00",
+      "updated_at": "2026-05-12T16:28:41.776134+00:00"
+    }
+  }
+}
