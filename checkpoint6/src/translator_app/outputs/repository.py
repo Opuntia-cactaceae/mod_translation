@@ -347,6 +347,56 @@ class TranslatedOutputFileRepository:
             return result
 
     # ------------------------------------------------------------------
+    # Output file refs (lightweight id + path lookup)
+    # ------------------------------------------------------------------
+
+    def get_output_file_refs(
+        self, job_id: str,
+    ) -> List[Dict[str, str]]:
+        """Return lightweight (id, translated_file_path) refs for all files
+        belonging to *job_id*.  Minimal query — no JOINs, no analysis."""
+        with self._lock:
+            conn = self.db.connect()
+            rows = conn.execute(
+                "SELECT id, translated_file_path FROM translated_output_files "
+                "WHERE job_id = ? ORDER BY file_name ASC",
+                (job_id,),
+            ).fetchall()
+            return [
+                {"id": row["id"], "path": row["translated_file_path"]}
+                for row in rows
+            ]
+
+    def get_output_file_refs_batch(
+        self, job_ids: List[str],
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """Return output file refs grouped by job_id for all given *job_ids*.
+
+        Returns a dict mapping each job_id to a list of ``{id, path}`` dicts.
+        """
+        if not job_ids:
+            return {}
+        with self._lock:
+            conn = self.db.connect()
+            placeholders = ",".join("?" for _ in job_ids)
+            rows = conn.execute(
+                f"SELECT id, job_id, translated_file_path "
+                f"FROM translated_output_files "
+                f"WHERE job_id IN ({placeholders}) "
+                f"ORDER BY file_name ASC",
+                tuple(job_ids),
+            ).fetchall()
+            result: Dict[str, List[Dict[str, str]]] = {}
+            for row in rows:
+                jid = row["job_id"]
+                if jid not in result:
+                    result[jid] = []
+                result[jid].append(
+                    {"id": row["id"], "path": row["translated_file_path"]}
+                )
+            return result
+
+    # ------------------------------------------------------------------
     # Tree building
     # ------------------------------------------------------------------
 
@@ -509,22 +559,35 @@ class TranslatedOutputFileRepository:
         The ``diagnostics_json`` column is stored as JSON.
         ``errors_count`` and ``warnings_count`` are derived from the
         diagnostics list.
+
+        If ``result.analysis_metadata`` is set, it is embedded in the
+        diagnostics JSON under a reserved ``__analysis_metadata__`` key
+        for persistence without a schema migration.
         """
-        diagnostics_json = json.dumps(
-            [
-                {
-                    "severity": d.severity,
-                    "code": d.code,
-                    "message": d.message,
-                    "source": d.source,
-                    "line": d.line,
-                    "column": d.column,
-                    "key": d.key,
-                    "details": d.details,
-                }
-                for d in result.diagnostics
-            ]
-        )
+        diag_list: list[dict] = [
+            {
+                "severity": d.severity,
+                "code": d.code,
+                "message": d.message,
+                "source": d.source,
+                "line": d.line,
+                "column": d.column,
+                "key": d.key,
+                "details": d.details,
+            }
+            for d in result.diagnostics
+        ]
+
+        if result.analysis_metadata is not None:
+            diag_list.append({
+                "severity": "info",
+                "code": "__analysis_metadata__",
+                "message": "",
+                "source": "metadata",
+                "details": result.analysis_metadata,
+            })
+
+        diagnostics_json = json.dumps(diag_list)
 
         with self._lock:
             conn = self.db.connect()
@@ -791,58 +854,64 @@ class TranslatedOutputFileRepository:
 
 
     # ------------------------------------------------------------------
-    # Analysis validity helpers
+    # Freshness state computation
     # ------------------------------------------------------------------
 
     @staticmethod
-    def is_latest_analysis_valid(
+    def compute_freshness_state(
         file: TranslatedOutputFile,
-    ) -> Optional[bool]:
-        """Determine whether the latest analysis is still valid.
+    ) -> str:
+        """Determine the freshness state of the latest analysis.
 
-        Returns:
-            - ``None`` if there is no latest analysis (``missing``).
-            - ``True`` if hashes match (``valid``).
-            - ``False`` if hashes differ (``outdated``).
+        Returns one of:
+            - ``"not_analyzed"`` — no analysis exists.
+            - ``"unknown"`` — analysis exists but at least one required hash
+              (source or translated) is ``None`` in either the analysis
+              result or the current file hashes, so freshness cannot be
+              determined.
+            - ``"current"`` — all required hashes are non-``None`` and match.
+            - ``"outdated"`` — all required hashes are non-``None`` and at
+              least one pair differs.
 
-        Validity rule:
-            An analysis is **valid** iff::
-
-                analysis.translated_hash == file.current_translated_hash
-
-            And for source (if analysis has source_hash)::
-
-                analysis.source_hash == file.current_source_hash
+        Hash comparison rule:
+            - non-null stored source hash must equal non-null current
+              source hash;
+            - non-null stored translated hash must equal non-null current
+              translated hash;
+            - if no analysis exists → ``not_analyzed``;
+            - if any required hash is ``None`` → ``unknown``;
+            - if hashes are present and match → ``current``;
+            - if hashes are present and differ → ``outdated``.
         """
         analysis = file.latest_analysis
         if analysis is None:
-            return None  # missing
+            return "not_analyzed"
 
-        translated_match = (
-            analysis.translated_hash is None
-            or analysis.translated_hash == file.current_translated_hash
-        )
-        source_match = (
+        # All four hashes must be non-None to perform a valid comparison
+        if (
             analysis.source_hash is None
-            or analysis.source_hash == file.current_source_hash
-        )
-        return translated_match and source_match
+            or analysis.translated_hash is None
+            or file.current_source_hash is None
+            or file.current_translated_hash is None
+        ):
+            return "unknown"
+
+        source_match = analysis.source_hash == file.current_source_hash
+        translated_match = analysis.translated_hash == file.current_translated_hash
+
+        if source_match and translated_match:
+            return "current"
+        return "outdated"
 
     @staticmethod
     def get_analysis_state(
         file: TranslatedOutputFile,
     ) -> str:
-        """Return a human-readable string for the latest analysis state.
+        """Alias for :meth:`compute_freshness_state`.
 
-        One of:
-            - ``"missing"`` — no analysis exists.
-            - ``"valid"`` — analysis exists and hashes match current content.
-            - ``"outdated"`` — analysis exists but content has changed.
+        Retained for backward compatibility while callers migrate.
         """
-        valid = TranslatedOutputFileRepository.is_latest_analysis_valid(file)
-        if valid is None:
-            return "missing"
-        return "valid" if valid else "outdated"
+        return TranslatedOutputFileRepository.compute_freshness_state(file)
 
 
 def _now() -> str:

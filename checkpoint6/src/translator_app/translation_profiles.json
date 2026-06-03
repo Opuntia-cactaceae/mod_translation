@@ -52,7 +52,7 @@
     "44256bee-b4d6-4923-9030-9543f6579e43": {
       "id": "44256bee-b4d6-4923-9030-9543f6579e43",
       "name": "Copied System",
-      "description": "Stellaris localisation with strict JSON batch prompt, legacy game token protection, and JSON batch validation.",
+      "description": "Stellaris localisation with strict JSON batch prompt, rule-set game token protection, and JSON batch validation.",
       "game": "stellaris",
       "file_handler": "stellaris_localisation",
       "config": {
@@ -73,8 +73,8 @@
           "profile_name": "strict_json_stellaris"
         },
         "protection": {
-          "strategy": "legacy_game_tokens",
-          "options": {}
+          "strategy": "rule_set",
+          "rule_set_ids": ["builtin_default_game_localisation"]
         },
         "validation": {
           "validator_name": "json_batch",
@@ -92,7 +92,7 @@
     "354d337b-fa53-41f6-b518-f6ad9caa8a2a": {
       "id": "354d337b-fa53-41f6-b518-f6ad9caa8a2a",
       "name": "Stellaris EN→RU strict",
-      "description": "Stellaris localisation with strict JSON batch prompt, legacy game token protection, and JSON batch validation.",
+      "description": "Stellaris localisation with strict JSON batch prompt, rule-set game token protection, and JSON batch validation.",
       "game": "stellaris",
       "file_handler": "stellaris_localisation",
       "config": {
@@ -113,8 +113,8 @@
           "profile_name": "strict_json_stellaris"
         },
         "protection": {
-          "strategy": "legacy_game_tokens",
-          "options": {}
+          "strategy": "rule_set",
+          "rule_set_ids": ["builtin_default_game_localisation"]
         },
         "validation": {
           "validator_name": "json_batch",
@@ -185,7 +185,8 @@
           "profile_name": "json_batch"
         },
         "protection": {
-          "strategy": "legacy_game_tokens"
+          "strategy": "rule_set",
+          "rule_set_ids": ["builtin_default_game_localisation"]
         },
         "validation": {
           "validator_name": "composite"

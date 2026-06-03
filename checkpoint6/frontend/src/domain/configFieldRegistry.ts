@@ -196,6 +196,13 @@ export const CONFIG_FIELD_REGISTRY: ConfigFieldEntry[] = [
     type: 'string',
     defaultValue: '',
   },
+  {
+    formKey: 'ruleSetIds',
+    configPaths: ['protection.rule_set_ids'],
+    category: 'protection',
+    type: 'string[]',
+    defaultValue: [] as string[],
+  },
 
   // ================================================================
   // Validation

@@ -14,7 +14,6 @@ from translator_app.settings.models import AppSettings
 from translator_app.secrets.service import SecretsService
 from translator_app.file_processing.service import FileProcessingService
 from translator_app.jobs.manager import JobManager
-from translator_app.editor.service import EditorService
 from translator_app.translation.cache import TranslationCache
 from translator_app.translation.config import TranslationConfig
 from translator_app.translation.prompt_presets import PromptPresetService
@@ -24,11 +23,27 @@ from translator_app.mods.descriptor import DescriptorService
 from translator_app.mods.discovery import ModDiscoveryService
 from translator_app.mods.install import ModInstallService
 from translator_app.storage.db import DatabaseService
+from translator_app.storage.migrations import MigrationManager
+from translator_app.storage.protection_snapshot_repository import (
+    ProtectionSnapshotRepository,
+)
 from translator_app.storage.repositories import JobRepository, DiagnosticsRepository, TraceRepository
-from translator_app.outputs.analysis.legacy_compilability import LegacyCompilabilityAdapter
+from translator_app.pairing_project.repository import PairingProjectRepository
 from translator_app.outputs.analysis.placeholders import PlaceholderAnalyzer
+from translator_app.outputs.analysis.profile_staleness import (
+    AnalysisProfileStalenessChecker,
+)
+from translator_app.outputs.analysis.protection_metadata import (
+    ProtectionMetadataResolver,
+)
 from translator_app.outputs.analysis.registry import AnalyzerRegistry
 from translator_app.outputs.analysis.service import OutputAnalysisService
+from translator_app.outputs.analysis.snapshot_resolver import (
+    AnalysisProtectionSnapshotResolver,
+)
+from translator_app.outputs.analysis.divergence_repository import (
+    AnalysisDivergenceRepository,
+)
 from translator_app.outputs.analysis.job_repository import AnalysisJobRepository
 from translator_app.outputs.analysis.job_service import OutputAnalysisJobService
 from translator_app.outputs.analysis.worker import OutputAnalysisWorker
@@ -36,7 +51,6 @@ from translator_app.outputs.debug_service import OutputDebugService
 from translator_app.outputs.repository import TranslatedOutputFileRepository
 from translator_app.outputs.scan_event_repository import ScanEventRepository
 from translator_app.outputs.service import TranslatedOutputFileService
-from translator_app.outputs.editor_service import TranslatedOutputEditorService
 from translator_app.outputs.file_open_service import FileOpenService
 from translator_app.outputs.job_output_resolver import JobOutputLocationResolver
 from translator_app.outputs.persistence import OutputPersistenceService
@@ -50,6 +64,16 @@ from translator_app.translation.profiles import TranslationProfileService
 from translator_app.translation.config import TranslationConfigBuilder
 from translator_app.translation.core_adapter import TranslationCoreAdapter
 from translator_app.backend.services.draft_job_selection import DraftJobSelectionService
+from translator_app.backend.services.provider_models import ProviderModelService
+from translator_app.protection_custom.repository import CustomProtectionRuleRepository
+from translator_app.protection_custom.service import CustomProtectionService
+from translator_app.protection.rule_set import ProtectionRuleSetRepository
+from translator_app.protection_custom.learning_repository import ProtectionLearningRepository
+from translator_app.protection_custom.learning_service import ProtectionLearningService
+from translator_app.backend.services.protection_learning_file_source import (
+    ProtectionLearningFileSourceService,
+)
+from translator_app.editor_session.service import EditorSessionService
 from translator_app.jobs.execution import JobExecutionService
 from translator_app.storage.paths import (
     get_config_path,
@@ -62,6 +86,7 @@ from translator_app.storage.paths import (
     get_discovery_cache_path,
     get_raw_responses_dir,
     get_output_dir,
+    get_provider_models_path,
     get_data_dir,
     clear_paths_cache,
     maybe_migrate_old_paths,
@@ -77,21 +102,28 @@ class Services:
         self.file_processing: FileProcessingService = FileProcessingService()
         self.database: DatabaseService = DatabaseService(db_path=get_db_path())
         self.database.ensure_schema()
+        MigrationManager(self.database).run()
         self._log_startup_db_info()
         self.output_naming: OutputNamingService = OutputNamingService()
         self.job_repo: JobRepository = JobRepository(self.database)
         self.jobs: JobManager = JobManager(repository=self.job_repo)
-        self.editor: EditorService = EditorService(
-            file_processing=self.file_processing,
-            db_service=self.database,
-            output_naming=self.output_naming,
-            logging_service=self._make_logging(),
-        )
         self.cache: TranslationCache = TranslationCache(db_service=self.database)
         self.prompt_presets: PromptPresetService = PromptPresetService(
             store_path=get_prompt_presets_path(),
         )
-        self.protection: ProtectionService = ProtectionService()
+        self.protection_rule_set_repo: ProtectionRuleSetRepository = ProtectionRuleSetRepository(
+            self.database,
+        )
+        # Custom protection rules repository - must be created before
+        # ProtectionService so that custom rules are merged into the
+        # unified protection pipeline.
+        self.custom_protection_repo: CustomProtectionRuleRepository = CustomProtectionRuleRepository(
+            self.database,
+        )
+        self.protection: ProtectionService = ProtectionService(
+            rule_set_repo=self.protection_rule_set_repo,
+            custom_rule_repo=self.custom_protection_repo,
+        )
         self.registry = get_default_registry()
         self.descriptor: DescriptorService = DescriptorService()
         self.mod_install: ModInstallService = ModInstallService()
@@ -119,8 +151,46 @@ class Services:
         self.translation_profiles: TranslationProfileService = TranslationProfileService(
             store_path=get_profiles_path(),
         )
+        # Custom protection rules service (CRUD + preview).  ProtectionEngine
+        # integration is handled via ProtectionService (see above).
+        self.custom_protection: CustomProtectionService = CustomProtectionService(
+            repository=self.custom_protection_repo,
+        )
+
+        # Protection learning (SQLite-persisted profiles, samples, candidates).
+        self.protection_learning_repo: ProtectionLearningRepository = ProtectionLearningRepository(
+            self.database,
+        )
+        self.protection_learning: ProtectionLearningService = ProtectionLearningService(
+            repo=self.protection_learning_repo,
+            analyzer_service=self.custom_protection,
+            rule_repo=self.custom_protection_repo,
+        )
+
+        # Analysis protection snapshot resolver: repo + resolver used by
+        # ProtectionMetadataResolver (below) and output analysis layer.
+        # Must be created here, after protection_learning/custom_protection
+        # are available, but before protection_metadata_resolver.
+        self.protection_snapshot_repo: ProtectionSnapshotRepository = ProtectionSnapshotRepository(
+            self.database,
+        )
+        self.analysis_snapshot_resolver: AnalysisProtectionSnapshotResolver = AnalysisProtectionSnapshotResolver(
+            trace_service=self.trace,
+            snapshot_repo=self.protection_snapshot_repo,
+            custom_protection_service=self.custom_protection,
+            protection_learning_service=self.protection_learning,
+        )
+
+        # Protection metadata resolver: queries trace events for snapshot metadata.
+        # Used by the output analysis layer to correlate analysis results with
+        # the protection state at translation time.
+        self.protection_metadata_resolver: ProtectionMetadataResolver = ProtectionMetadataResolver(
+            trace_service=self.trace,
+            snapshot_repo=self.protection_snapshot_repo,
+        )
         # --- OutputPersistenceService: unified write + manifest register ---
         self.output_persistence: OutputPersistenceService = OutputPersistenceService()
+
         # --- Execution / Adapter / Config Builder (wired for background execution) ---
         self.translation_config_builder: TranslationConfigBuilder = TranslationConfigBuilder(
             settings_service=self.settings,
@@ -135,6 +205,7 @@ class Services:
             diagnostics_service=self.diagnostics,
             secrets_service=self.secrets,
             trace_service=self.trace,
+            protection_snapshot_repo=self.protection_snapshot_repo,
         )
         self.execution: JobExecutionService = JobExecutionService(
             job_manager=self.jobs,
@@ -149,15 +220,27 @@ class Services:
         )
         # --- Translated output files (P0-10) ---
         self.output_files_repo: TranslatedOutputFileRepository = TranslatedOutputFileRepository(self.database)
+
+        # Protection learning file source: backend-first file-based learning.
+        # Discovers mod/game files, previews localisation files, pairs
+        # source/translated files, and orchestrates learning analysis.
+        # All file I/O and parsing happens here — frontend is thin.
+        self.protection_learning_file_source: ProtectionLearningFileSourceService = (
+            ProtectionLearningFileSourceService(
+                mod_discovery=self.mod_discovery,
+                file_processing=self.file_processing,
+                protection_learning=self.protection_learning,
+                analyzer_service=self.custom_protection,
+                output_files_repo=self.output_files_repo,
+                settings_service=self.settings,
+            )
+        )
+
         self.output_location_resolver: JobOutputLocationResolver = JobOutputLocationResolver(
             job_manager=self.jobs,
         )
         # --- Debug observability (P0-10) ---
         self.scan_event_repo: ScanEventRepository = ScanEventRepository(self.database)
-        self.output_debug: OutputDebugService = OutputDebugService(
-            file_repository=self.output_files_repo,
-            scan_event_repo=self.scan_event_repo,
-        )
         # Wire event persister into scanner
         from translator_app.backend.api.output_debug import make_scan_event_persister
         self.output_scanner: TranslatedOutputScanner = TranslatedOutputScanner(
@@ -172,14 +255,6 @@ class Services:
         # Path security: compute allowed roots from all known output roots
         self._allowed_output_roots = self._compute_output_roots()
 
-        self.output_editor: TranslatedOutputEditorService = TranslatedOutputEditorService(
-            repository=self.output_files_repo,
-            file_processing=self.file_processing,
-            output_persistence=self.output_persistence,
-            allowed_output_roots=self._allowed_output_roots,
-            job_manager=self.jobs,
-        )
-
         # --- File open service (P0-10) ---
         self.file_open_service: FileOpenService = FileOpenService(
             repository=self.output_files_repo,
@@ -188,10 +263,14 @@ class Services:
         )
 
         # --- Output file analysis (P0-10) ---
-        self.analysis_registry: AnalyzerRegistry = AnalyzerRegistry()
-        self.analysis_registry.register(
-            "compilability", LegacyCompilabilityAdapter()
+        self.analysis_divergence_repo: AnalysisDivergenceRepository = AnalysisDivergenceRepository(
+            self.database,
         )
+        self.analysis_registry: AnalyzerRegistry = AnalyzerRegistry()
+        # The legacy compilability adapter has been removed.
+        # Authoritative scoring is produced by SnapshotAuthoritativeEvaluator
+        # via the snapshot-driven token integrity analysis path.
+        # PlaceholderAnalyzer is kept for supplementary non-authoritative diagnostics.
         self.analysis_registry.register(
             "placeholders", PlaceholderAnalyzer()
         )
@@ -199,6 +278,23 @@ class Services:
             repository=self.output_files_repo,
             registry=self.analysis_registry,
             file_processing=self.file_processing,
+            protection_metadata_resolver=self.protection_metadata_resolver,
+            divergence_repository=self.analysis_divergence_repo,
+            analysis_options_resolver=self.analysis_snapshot_resolver,
+        )
+        # --- Debug observability (continued) — needs output_analysis ---
+        self.profile_staleness_checker: AnalysisProfileStalenessChecker = (
+            AnalysisProfileStalenessChecker(
+                protection_learning_service=self.protection_learning,
+                custom_protection_service=self.custom_protection,
+            )
+        )
+        self.output_debug: OutputDebugService = OutputDebugService(
+            file_repository=self.output_files_repo,
+            scan_event_repo=self.scan_event_repo,
+            protection_metadata_resolver=self.protection_metadata_resolver,
+            analysis_service=self.output_analysis,
+            profile_staleness_checker=self.profile_staleness_checker,
         )
         # --- Async analysis jobs (P0-10) ---
         self.analysis_job_repo: AnalysisJobRepository = AnalysisJobRepository(self.database)
@@ -211,8 +307,29 @@ class Services:
             analysis_service=self.output_analysis,
         )
 
-        # Draft job selection (in-memory, survives page navigation, not restarts).
-        self.draft_selection: DraftJobSelectionService = DraftJobSelectionService()
+        # Editor session service (in-memory editing sessions)
+        self.editor_session: EditorSessionService = EditorSessionService(
+            repository=self.output_files_repo,
+            file_processing=self.file_processing,
+            output_persistence=self.output_persistence,
+            allowed_output_roots=self._allowed_output_roots,
+            job_manager=self.jobs,
+        )
+
+        # Draft job selection (persisted, with mod-discovery integration).
+        self.draft_selection: DraftJobSelectionService = DraftJobSelectionService(
+            mod_discovery=self.mod_discovery,
+        )
+
+        # Provider models directory (JSON-persisted user-editable model list).
+        self.provider_models: ProviderModelService = ProviderModelService(
+            store_path=get_provider_models_path(),
+        )
+
+        # Pairing Project workspace (v12: pairing workflow).
+        self.pairing_project_repo: PairingProjectRepository = PairingProjectRepository(
+            self.database,
+        )
 
     def _log_startup_db_info(self) -> None:
         """Log resolved storage paths and database state on startup.

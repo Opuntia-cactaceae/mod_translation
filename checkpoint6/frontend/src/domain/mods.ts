@@ -1,4 +1,5 @@
 import type { ModInfoSchema } from "../api/types";
+import { filterFilesByLanguage } from "../utils/localisationLanguage";
 
 /* ------------------------------------------------------------------ */
 /*  Domain models                                                      */
@@ -16,6 +17,7 @@ export interface ModModel {
   installedPath?: string | null;
   installAction: "install" | "reinstall";
   installConflict: boolean;
+  selfInstalled: boolean;
   diagnostics: unknown[];
   tags?: string[];
   supportedVersion?: string | null;
@@ -39,6 +41,7 @@ export function mapModInfo(dto: ModInfoSchema): ModModel {
     installedPath: dto.installed_path ?? null,
     installAction: dto.install_action as "install" | "reinstall",
     installConflict: dto.install_conflict,
+    selfInstalled: dto.self_installed ?? false,
     diagnostics: [...dto.diagnostics],
     tags: dto.tags?.length ? [...dto.tags] : undefined,
     supportedVersion: dto.supported_version || null,
@@ -68,6 +71,14 @@ export function getModKey(mod: ModLike): string {
   return mod.id || mod.mod_id || mod.path;
 }
 
+/**
+ * Stable unique key that is collision-free even when mod_id collides.
+ * Uses the absolute filesystem path which is inherently unique.
+ */
+export function getModStableKey(mod: ModLike): string {
+  return mod.path;
+}
+
 export function hasLocalisation(mod: ModLike): boolean {
   return getLocalisationPaths(mod).length > 0;
 }
@@ -80,7 +91,17 @@ export function canTranslateMod(mod: ModLike): boolean {
   return hasLocalisation(mod);
 }
 
-export function getInstallButtonLabel(mod: ModLike): string {
+/** Count localisation files of a mod that match the given language code. */
+export function getLocalisationCountForLanguage(
+  mod: ModLike,
+  language: string,
+): number {
+  const paths = getLocalisationPaths(mod);
+  return filterFilesByLanguage(paths, language).length;
+}
+
+export function getInstallButtonLabel(mod: ModModel): string {
+  if (mod.selfInstalled) return "Reinstall";
   return mod.installed ? "Reinstall" : "Install Mod";
 }
 
@@ -94,6 +115,10 @@ export function isInstalled(mod: ModModel): boolean {
 
 export function hasInstallConflict(mod: ModModel): boolean {
   return mod.installConflict;
+}
+
+export function isSelfInstalled(mod: ModModel): boolean {
+  return mod.selfInstalled;
 }
 
 export function getDescriptorPath(mod: ModModel): string | null {
@@ -124,7 +149,7 @@ export function getSupportedVersion(mod: ModModel): string | null {
 export type ContentSourceModel = ModModel;
 
 export function getContentSourceKey(source: ContentSourceModel): string {
-  return getModKey(source);
+  return getModStableKey(source);
 }
 
 export function canTranslateContentSource(source: ContentSourceModel): boolean {

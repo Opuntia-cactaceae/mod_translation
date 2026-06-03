@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import { BUILTIN_RULE_SET_ID } from '../../constants';
 import type { CreateJobFormValues } from './useCreateJobFlow';
 
 /* ------------------------------------------------------------------ */
@@ -22,6 +23,7 @@ export interface FieldSetters {
   // --- Advanced config setters ---
   setPromptProfileName: (v: string) => void;
   setProtectionStrategy: (v: string) => void;
+  setRuleSetIds: (v: string[]) => void;
   setValidatorName: (v: string) => void;
   setOutputDir: (v: string) => void;
   setOutputFilenameSuffix: (v: string) => void;
@@ -52,6 +54,7 @@ export interface DirtyFlags {
   // --- Advanced config dirty flags ---
   promptProfileNameDirty: boolean;
   protectionStrategyDirty: boolean;
+  ruleSetIdsDirty: boolean;
   validatorNameDirty: boolean;
   outputDirDirty: boolean;
   outputFilenameSuffixDirty: boolean;
@@ -101,6 +104,7 @@ export interface UseCreateJobFieldsReturn {
   // --- Advanced config fields exposed for assembly ---
   promptProfileName: string;
   protectionStrategy: string;
+  ruleSetIds: string[];
   validatorName: string;
   outputDir: string;
   outputFilenameSuffix: string;
@@ -125,7 +129,7 @@ export interface UseCreateJobFieldsReturn {
 export type CreateJobFormScalarValues = Pick<
   CreateJobFormValues,
   'jobName' | 'srcLang' | 'dstLang' | 'batchSize' | 'useCache' | 'provider' | 'model' | 'apiKeyId' | 'apiKeyIds'
-  | 'promptProfileName' | 'protectionStrategy' | 'validatorName'
+  | 'promptProfileName' | 'protectionStrategy' | 'ruleSetIds' | 'validatorName'
   | 'outputDir' | 'outputFilenameSuffix' | 'outputPreserveRelativePath' | 'outputOverwrite' | 'outputBackup'
   | 'temperature' | 'maxRetries' | 'timeoutSec' | 'maxCompletionTokens'
   | 'saveRawResponses'
@@ -157,6 +161,7 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
   // --- Advanced config state ---
   const [promptProfileName, setPromptProfileName] = useState('');
   const [protectionStrategy, setProtectionStrategy] = useState('');
+  const [ruleSetIds, setRuleSetIds] = useState<string[]>([BUILTIN_RULE_SET_ID]);
   const [validatorName, setValidatorName] = useState('');
   const [outputDir, setOutputDir] = useState('');
   const [outputFilenameSuffix, setOutputFilenameSuffix] = useState('');
@@ -192,6 +197,7 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
   // --- Advanced config dirty flags ---
   const [promptProfileNameDirty, setPromptProfileNameDirty] = useState(false);
   const [protectionStrategyDirty, setProtectionStrategyDirty] = useState(false);
+  const [ruleSetIdsDirty, setRuleSetIdsDirty] = useState(false);
   const [validatorNameDirty, setValidatorNameDirty] = useState(false);
   const [outputDirDirty, setOutputDirDirty] = useState(false);
   const [outputFilenameSuffixDirty, setOutputFilenameSuffixDirty] = useState(false);
@@ -282,6 +288,12 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
           const v = value as string;
           setProtectionStrategy(v);
           setProtectionStrategyDirty(true);
+          break;
+        }
+        case 'ruleSetIds': {
+          const v = value as string[];
+          setRuleSetIds(v);
+          setRuleSetIdsDirty(true);
           break;
         }
         case 'validatorName': {
@@ -396,6 +408,8 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
     setPromptProfileNameDirty(false);
     setProtectionStrategy('');
     setProtectionStrategyDirty(false);
+    setRuleSetIds([BUILTIN_RULE_SET_ID]);
+    setRuleSetIdsDirty(false);
     setValidatorName('');
     setValidatorNameDirty(false);
     setOutputDir('');
@@ -435,6 +449,7 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
     setApiKeyIds,
     setPromptProfileName,
     setProtectionStrategy,
+    setRuleSetIds,
     setValidatorName,
     setOutputDir,
     setOutputFilenameSuffix,
@@ -464,6 +479,7 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
     modelDirty,
     promptProfileNameDirty,
     protectionStrategyDirty,
+    ruleSetIdsDirty,
     validatorNameDirty,
     outputDirDirty,
     outputFilenameSuffixDirty,
@@ -504,6 +520,7 @@ export function useCreateJobFields(): UseCreateJobFieldsReturn {
     // --- Advanced config fields ---
     promptProfileName,
     protectionStrategy,
+    ruleSetIds,
     validatorName,
     outputDir,
     outputFilenameSuffix,

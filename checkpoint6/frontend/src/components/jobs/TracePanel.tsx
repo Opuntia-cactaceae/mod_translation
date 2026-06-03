@@ -14,6 +14,7 @@ import {
   extractBatchNo,
   mapTraceEvent,
   mapTraceUnitResponse,
+  isJobTerminal,
   type TraceModel,
   type TraceEventModel,
   type TraceUnitModel,
@@ -45,8 +46,19 @@ export default function TracePanel({ jobId, jobName, onClose }: TracePanelProps)
   const [batchError, setBatchError] = useState<string | null>(null);
 
   // ---- Raw runtime log polling (live in-memory, no DB persistence) ----
+  // Poll only while the job is active (not terminal).  For terminal jobs
+  // the raw log is already final — further polling serves no purpose.
+  const jobIdRef = useRef<string | null>(null);
+  jobIdRef.current = jobId ?? null;
+
   useEffect(() => {
     if (!jobId) return;
+    // Wait until we know the job's status via useJobTrace trace.
+    // On the initial render trace is null (not yet fetched) — do not
+    // start raw-log polling until we know whether the job is terminal.
+    if (!trace) return;
+    // Do not start raw-log polling for terminal jobs — the log is final.
+    if (isJobTerminal(trace)) return;
 
     let cancelled = false;
     let intervalId: ReturnType<typeof setInterval>;
@@ -55,11 +67,14 @@ export default function TracePanel({ jobId, jobName, onClose }: TracePanelProps)
       try {
         const resp = await api.getRuntimeRawLog(jobId);
         if (!cancelled) {
+          // Guard against stale responses for a previous jobId
+          if (jobIdRef.current !== jobId) return;
           setRawLogLines(resp.lines);
         }
       } catch (err) {
         // ignore silently during polling (raw log may be empty/unavailable)
         if (!cancelled && err instanceof ApiError) {
+          if (jobIdRef.current !== jobId) return;
           setRawLogLines([]);
         }
       }
@@ -72,7 +87,7 @@ export default function TracePanel({ jobId, jobName, onClose }: TracePanelProps)
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [jobId]);
+  }, [jobId, trace]);
 
   // ---- Batch modal handlers ----
   const openBatchModal = async (batchNo: number) => {

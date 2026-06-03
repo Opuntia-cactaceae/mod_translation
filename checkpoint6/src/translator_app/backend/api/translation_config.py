@@ -52,11 +52,13 @@ def _ui_config_from_request(body) -> dict:
 @router.get("/options", response_model=TranslationOptionsResponse)
 def get_translation_options(svcs: Services = Depends(get_services)):
     """List available translation providers, prompt profiles, protection strategies, and validators."""
+    rule_sets = svcs.protection.list_available_rule_sets()
     return TranslationOptionsResponse(
         providers=sorted(get_supported_providers()),
         prompt_profiles=sorted(get_supported_prompt_profiles()),
         protection_strategies=sorted(get_supported_protection_strategies()),
         validators=sorted(get_supported_validators()),
+        rule_sets=rule_sets,
     )
 
 

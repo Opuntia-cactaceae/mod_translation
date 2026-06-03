@@ -38,6 +38,7 @@ function mockSetters(): FieldSetters {
     setApiKeyIds: vi.fn(),
     setPromptProfileName: vi.fn(),
     setProtectionStrategy: vi.fn(),
+    setRuleSetIds: vi.fn(),
     setValidatorName: vi.fn(),
     setOutputDir: vi.fn(),
     setOutputFilenameSuffix: vi.fn(),
@@ -327,24 +328,10 @@ describe('applyProfileToForm', () => {
   });
 
   /* ------------------------------------------------------------------ */
-  /*  Mod-aware profile application                                      */
+  /*  Game config application (always applied, no mod guard)             */
   /* ------------------------------------------------------------------ */
 
-  it('does NOT apply game/file_handler when a mod is selected', () => {
-    const profiles = [makeProfile({
-      id: 'p1',
-      config: { src_lang: 'en' },
-      game: 'stellaris',
-      file_handler: 'stellaris_localisation',
-    })];
-    const selectedMod = makeMod({ game_id: 'stellaris' });
-    const setGameConfig = vi.fn();
-    applyProfileToForm(profiles, 'p1', mockSetters(), setGameConfig, selectedMod);
-    // setGameConfig should NOT be called because a mod is selected
-    expect(setGameConfig).not.toHaveBeenCalled();
-  });
-
-  it('does apply game/file_handler when selectedMod is null (no mod selected)', () => {
+  it('applies game and file_handler from profile', () => {
     const profiles = [makeProfile({
       id: 'p1',
       config: { src_lang: 'en' },
@@ -352,8 +339,7 @@ describe('applyProfileToForm', () => {
       file_handler: 'stellaris_localisation',
     })];
     const setGameConfig = vi.fn();
-    applyProfileToForm(profiles, 'p1', mockSetters(), setGameConfig, null);
-    // setGameConfig should be called because no mod is selected
+    applyProfileToForm(profiles, 'p1', mockSetters(), setGameConfig);
     expect(setGameConfig).toHaveBeenCalled();
     const updater = setGameConfig.mock.calls[0][0];
     const result = updater(null);
@@ -361,19 +347,18 @@ describe('applyProfileToForm', () => {
     expect(result).toHaveProperty('file_handler', 'stellaris_localisation');
   });
 
-  it('does apply game/file_handler when selectedMod is undefined (default)', () => {
+  it('applies game config when profile has no file_handler', () => {
     const profiles = [makeProfile({
       id: 'p1',
       config: { src_lang: 'en' },
       game: 'stellaris',
     })];
     const setGameConfig = vi.fn();
-    // Not passing selectedMod at all — uses default (null)
     applyProfileToForm(profiles, 'p1', mockSetters(), setGameConfig);
     expect(setGameConfig).toHaveBeenCalled();
   });
 
-  it('still applies other profile fields when a mod is selected', () => {
+  it('still applies all non-game fields from profile', () => {
     const profiles = [makeProfile({
       id: 'p1',
       config: {
@@ -384,33 +369,18 @@ describe('applyProfileToForm', () => {
       game: 'stellaris',
       file_handler: 'stellaris_localisation',
     })];
-    const selectedMod = makeMod({ game_id: 'different_game' });
     const setters = mockSetters();
     const setGameConfig = vi.fn();
 
-    applyProfileToForm(profiles, 'p1', setters, setGameConfig, selectedMod);
+    applyProfileToForm(profiles, 'p1', setters, setGameConfig);
 
-    // Non-game fields must still be applied
+    // All fields must be applied
     expect(setters.setSrcLang).toHaveBeenCalledWith('french');
     expect(setters.setDstLang).toHaveBeenCalledWith('german');
     expect(setters.setProvider).toHaveBeenCalledWith('openai');
     expect(setters.setModel).toHaveBeenCalledWith('gpt-4');
 
-    // Game config must NOT be applied
-    expect(setGameConfig).not.toHaveBeenCalled();
-  });
-
-  it('does not call setGameConfig when mod is selected even with different game_id', () => {
-    const profiles = [makeProfile({
-      id: 'p1',
-      config: {},
-      game: 'hoi4',
-      file_handler: 'hoi4_localisation',
-    })];
-    const selectedMod = makeMod({ game_id: 'stellaris' });
-    const setGameConfig = vi.fn();
-    applyProfileToForm(profiles, 'p1', mockSetters(), setGameConfig, selectedMod);
-    // Different games should still not overwrite — mod is selected
-    expect(setGameConfig).not.toHaveBeenCalled();
+    // Game config always applied (no mod guard)
+    expect(setGameConfig).toHaveBeenCalled();
   });
 });

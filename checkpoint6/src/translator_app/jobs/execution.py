@@ -690,7 +690,7 @@ class JobExecutionService:
         if self._is_cancelled(job_id):
             return None
 
-        result = self.adapter.translate_batch(task_units, config)
+        result = self.adapter.translate_batch(task_units, config, job_id=job_id)
 
         # P1-03: check cancellation after runtime call, before saving results.
         # If cancelled during the batch, the batch result is discarded so that
@@ -743,7 +743,7 @@ class JobExecutionService:
 
         # --- Save successful translations to cache ---
         if self.cache and getattr(config, 'use_cache', False):
-            strategy = config.protection.strategy or ""
+            strategy = ",".join(config.protection.rule_set_ids) if config.protection.rule_set_ids else ""
             for unit in task_units:
                 if unit.translated_text and unit.translated_text.strip() \
                         and unit.status not in ("failed",):

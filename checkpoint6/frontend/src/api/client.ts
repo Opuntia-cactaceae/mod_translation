@@ -4,6 +4,10 @@
 import type {
   HealthResponse,
   AppStateResponse,
+  ProtectionRule,
+  ProtectionRuleSet,
+  ValidateRuleRequest,
+  RuleValidationResponse,
   SettingsResponse,
   SettingsUpdateRequest,
   ValidatePathRequest,
@@ -36,11 +40,6 @@ import type {
   UpdateConfigRequest,
   CacheStatsResponse,
   CacheClearResponse,
-  EditorFileResponse,
-  UpdateEntryRequest,
-  UpdateEntryResponse,
-  SaveFileRequest,
-  SaveFileResponse,
   ModDiscoveryRequest,
   ModDiscoveryResponse,
   DescriptorReadResponse,
@@ -76,9 +75,6 @@ import type {
   OutputFilesSummaryResponse,
   OutputReindexRequest,
   OutputScanResultResponse,
-  OutputFileEditorPayload,
-  SaveTranslatedContentRequest,
-  SaveTranslatedContentResponse,
   FileContentsResponse,
   OutputAnalysisResult,
   OutputAnalyzeRequest,
@@ -94,8 +90,65 @@ import type {
   AddDraftFilesRequest,
   RemoveDraftFilesRequest,
   SetDraftFilesRequest,
+  SetDraftFilesFromRawRequest,
+  AddModFilesRequest,
+  SearchFilesRequest,
   RuntimeRawLogLine,
   RuntimeRawLogResponse,
+  EditorSessionState,
+  SessionUpdateEntryRequest,
+  SessionUpdateEntryResponse,
+  UpdateRawTextRequest,
+  UpdateRawTextResponse,
+  SessionSaveFileResponse,
+  ProviderModelsResponse,
+  ProviderGroup,
+  ProviderModelEntry,
+  CreateProviderModelRequest,
+  UpdateProviderModelRequest,
+  ResetDefaultsResponse,
+  ProtectionAnalysisInput,
+  ProtectionAnalysisResult,
+  GroupedAnalysisResult,
+  CreateRulesFromCandidatesRequest,
+  CreateRulesFromCandidatesResponse,
+  CustomProtectionRuleSchema,
+  CreateRuleRequest,
+  UpdateRuleRequest,
+  PreviewRequest,
+  PreviewResponse,
+  ProtectionProfileSchema,
+  LearnResponse,
+  ProfileCandidatesResponse,
+  CandidateStatusUpdate,
+  LearnedCandidateSchema,
+  FileSourcesResponse,
+  FileSourcePreviewRequest,
+  FileSourcePreviewResponse,
+  AnalyzeFilesRequest,
+  AnalyzeFilesResponse,
+  CreateRuleSetRequest,
+  UpdateRuleSetRequest,
+  CreateRuleInSetRequest,
+  UpdateRuleInSetRequest,
+  PairingProject,
+  CreatePairingProjectRequest,
+  UpdatePairingProjectRequest,
+  ScanResponse,
+  PairingProjectFile,
+  FileContentResponse,
+  FileGroupResponse,
+  PairingProjectPair,
+  CreatePairRequest,
+  UpdatePairRequest,
+  PairPreviewResponse,
+  PairSuggestionResponse,
+  AlignmentResponse,
+  SaveAlignmentRequest,
+  PreviewAlignmentRequest,
+  AlignmentPreviewResponse,
+  LearnFromPairsRequest,
+  LearnFromPairsResponse,
 } from './types';
 
 const BASE_URL = '/api';
@@ -201,15 +254,6 @@ export const api = {
   getCacheStats: () => request<CacheStatsResponse>('GET', '/cache/stats'),
   clearCache: () => request<CacheClearResponse>('POST', '/cache/clear'),
 
-  // Editor
-  getEditorFile: (fileId: string) => request<EditorFileResponse>('GET', `/editor/files/${fileId}`),
-  updateEditorEntry: (fileId: string, entryId: string, data: UpdateEntryRequest) =>
-    request<UpdateEntryResponse>('PUT', `/editor/files/${fileId}/entries/${entryId}`, data),
-  bulkEditEntries: (fileId: string, changes: { row_id: string; translated_text: string }[]) =>
-    request<{ success: boolean; updated_count: number }>('POST', `/editor/files/${fileId}/entries/bulk`, { changes }),
-  saveEditorFile: (fileId: string, data: SaveFileRequest) => request<SaveFileResponse>('POST', `/editor/files/${fileId}/save`, data),
-  validateEditorFile: (fileId: string) => request<Record<string, unknown>>('POST', `/editor/files/${fileId}/validate`),
-
   // Mods discovery
   discoverMods: (data: ModDiscoveryRequest) => request<ModDiscoveryResponse>('POST', '/mods/discover', data),
   getDiscoveredMods: () => request<ModDiscoveryResponse>('GET', '/mods/discovered'),
@@ -292,11 +336,6 @@ export const api = {
   reindexJobOutputs: (jobId: string, body?: OutputReindexRequest) =>
     request<OutputScanResultResponse>('POST', `/translation-jobs/${jobId}/outputs/reindex`, body || {}),
 
-  // Output File Editor
-  getOutputEditorPayload: (outputFileId: string) =>
-    request<OutputFileEditorPayload>('GET', `/output-files/${outputFileId}/editor-payload`),
-  saveOutputTranslatedContent: (outputFileId: string, data: SaveTranslatedContentRequest) =>
-    request<SaveTranslatedContentResponse>('PUT', `/output-files/${outputFileId}/translated-content`, data),
   getFileContents: (outputFileId: string) =>
     request<FileContentsResponse>('GET', `/output-files/${outputFileId}/file-contents`),
 
@@ -330,6 +369,8 @@ export const api = {
     request<OutputAnalysisJob>('GET', `/output-analysis-jobs/${jobId}`),
   cancelOutputAnalysisJob: (jobId: string) =>
     request<OutputAnalysisJob>('POST', `/output-analysis-jobs/${jobId}/cancel`),
+  startOutputAnalysisJob: (jobId: string) =>
+    request<OutputAnalysisJob>('POST', `/output-analysis-jobs/${jobId}/start`),
 
   // Output File Open Folder
   openSourceFolder: (outputFileId: string) =>
@@ -353,6 +394,191 @@ export const api = {
   removeDraftFiles: (data: RemoveDraftFilesRequest) => request<DraftJobSelectionState>('DELETE', '/draft-job-selection/files', data),
   setDraftJobSelection: (data: SetDraftFilesRequest) => request<DraftJobSelectionState>('PUT', '/draft-job-selection', data),
   clearDraftJobSelection: () => request<DraftJobSelectionState>('DELETE', '/draft-job-selection'),
+  // NEW: full replacement from raw textarea
+  setDraftFilesFromRaw: (data: SetDraftFilesFromRawRequest) => request<DraftJobSelectionState>('PUT', '/draft-job-selection/files', data),
+  // NEW: add mod localisation files
+  addDraftFilesFromMods: (data: AddModFilesRequest) => request<DraftJobSelectionState>('POST', '/draft-job-selection/mods', data),
+  // NEW: search localisation files (optionally add to draft)
+  searchAndAddDraftFiles: (data: SearchFilesRequest) => request<DraftJobSelectionState>('POST', '/draft-job-selection/search', data),
+  // NEW: POST variant of clear
+  clearDraftJobSelectionPost: () => request<DraftJobSelectionState>('POST', '/draft-job-selection/clear'),
+
+  // --- Editor Session ---
+  openEditorSession: (outputFileId: string) =>
+    request<EditorSessionState>('POST', `/editor/session/${outputFileId}/open`),
+  getEditorSession: (outputFileId: string) =>
+    request<EditorSessionState>('GET', `/editor/session/${outputFileId}`),
+  updateSessionEntry: (outputFileId: string, entryKey: string, data: SessionUpdateEntryRequest) =>
+    request<SessionUpdateEntryResponse>('PUT', `/editor/session/${outputFileId}/entries/${encodeURIComponent(entryKey)}`, data),
+  updateEditorRawText: (outputFileId: string, data: UpdateRawTextRequest) =>
+    request<UpdateRawTextResponse>('PUT', `/editor/session/${outputFileId}/raw-text`, data),
+  saveEditorSessionToDisk: (outputFileId: string) =>
+    request<SessionSaveFileResponse>('POST', `/editor/session/${outputFileId}/save-file`),
+  revertEditorSession: (outputFileId: string) =>
+    request<EditorSessionState>('POST', `/editor/session/${outputFileId}/revert`),
+  closeEditorSession: (outputFileId: string) =>
+    request<void>('POST', `/editor/session/${outputFileId}/close`),
+
+  // Provider Models
+  getProviderModels: (params?: { provider?: string; include_disabled?: boolean; include_builtin?: boolean }) => {
+    const sp = new URLSearchParams();
+    if (params?.provider) sp.set('provider', params.provider);
+    if (params?.include_disabled) sp.set('include_disabled', 'true');
+    if (params?.include_builtin === false) sp.set('include_builtin', 'false');
+    const qs = sp.toString();
+    return request<ProviderModelsResponse>('GET', `/provider-models${qs ? `?${qs}` : ''}`);
+  },
+  getProviderModelsForProvider: (provider: string, params?: { include_disabled?: boolean; include_builtin?: boolean }) => {
+    const sp = new URLSearchParams();
+    if (params?.include_disabled) sp.set('include_disabled', 'true');
+    if (params?.include_builtin === false) sp.set('include_builtin', 'false');
+    const qs = sp.toString();
+    return request<ProviderGroup>('GET', `/provider-models/${encodeURIComponent(provider)}${qs ? `?${qs}` : ''}`);
+  },
+  createProviderModel: (data: CreateProviderModelRequest) =>
+    request<ProviderModelEntry>('POST', '/provider-models', data),
+  updateProviderModel: (id: string, data: UpdateProviderModelRequest) =>
+    request<ProviderModelEntry>('PUT', `/provider-models/${id}`, data),
+  deleteProviderModel: (id: string) =>
+    request<void>('DELETE', `/provider-models/${id}`),
+  resetProviderModelDefaults: () =>
+    request<ResetDefaultsResponse>('POST', '/provider-models/reset-defaults'),
+
+  // Protection Rules
+  getProtectionRules: () =>
+    request<CustomProtectionRuleSchema[]>('GET', '/protection-rules'),
+  getProtectionRule: (id: string) =>
+    request<CustomProtectionRuleSchema>('GET', `/protection-rules/${id}`),
+  createProtectionRule: (data: CreateRuleRequest) =>
+    request<CustomProtectionRuleSchema>('POST', '/protection-rules', data),
+  updateProtectionRule: (id: string, data: UpdateRuleRequest) =>
+    request<CustomProtectionRuleSchema>('PUT', `/protection-rules/${id}`, data),
+  deleteProtectionRule: (id: string) =>
+    request<void>('DELETE', `/protection-rules/${id}`),
+  previewProtectionRule: (data: PreviewRequest) =>
+    request<PreviewResponse>('POST', '/protection-rules/preview', data),
+
+  // Protection Analysis
+  analyzeProtectionSamples: (data: ProtectionAnalysisInput) =>
+    request<ProtectionAnalysisResult>('POST', '/protection-rules/analyze', data),
+
+  // Grouped Protection Analysis
+  analyzeGroupedProtectionSamples: (data: ProtectionAnalysisInput) =>
+    request<GroupedAnalysisResult>('POST', '/protection-rules/analyze-grouped', data),
+
+  // Protection Profiles & Learning
+  getProtectionProfiles: () =>
+    request<ProtectionProfileSchema[]>('GET', '/protection-profiles'),
+  getProtectionProfile: (id: string) =>
+    request<ProtectionProfileSchema>('GET', `/protection-profiles/${id}`),
+  createProtectionProfile: (data: CreateProfileRequest) =>
+    request<ProtectionProfileSchema>('POST', '/protection-profiles', data),
+  deleteProtectionProfile: (id: string) =>
+    request<void>('DELETE', `/protection-profiles/${id}`),
+  learnFromSamples: (id: string, data: ProtectionAnalysisInput) =>
+    request<LearnResponse>('POST', `/protection-profiles/${id}/learn`, data),
+  getProfileCandidates: (id: string, status?: string) =>
+    request<ProfileCandidatesResponse>('GET', `/protection-profiles/${id}/candidates${status ? `?status=${status}` : ''}`),
+  updateCandidateStatus: (profileId: string, candidateId: string, data: CandidateStatusUpdate) =>
+    request<LearnedCandidateSchema>('PUT', `/protection-profiles/${profileId}/candidates/${candidateId}/status`, data),
+
+  // Batch rule creation from candidates
+  createRulesFromCandidates: (profileId: string, data: CreateRulesFromCandidatesRequest) =>
+    request<CreateRulesFromCandidatesResponse>('POST', `/protection-profiles/${profileId}/candidates/create-rules`, data),
+
+  // --- File Source Learning (backend-first) ---
+  discoverFileSources: () =>
+    request<FileSourcesResponse>('GET', '/protection-learning/file-sources'),
+  previewFileSources: (data: FileSourcePreviewRequest) =>
+    request<FileSourcePreviewResponse>('POST', '/protection-learning/file-sources/preview', data),
+  analyzeFilesFromSources: (data: AnalyzeFilesRequest) =>
+    request<AnalyzeFilesResponse>('POST', '/protection-learning/analyze-files', data),
+
+  // Rule Sets
+  getRuleSets: () =>
+    request<ProtectionRuleSet[]>('GET', '/rule-sets'),
+  getRuleSet: (id: string) =>
+    request<ProtectionRuleSet>('GET', `/rule-sets/${id}`),
+  createRuleSet: (data: CreateRuleSetRequest) =>
+    request<ProtectionRuleSet>('POST', '/rule-sets', data),
+  updateRuleSet: (id: string, data: UpdateRuleSetRequest) =>
+    request<ProtectionRuleSet>('PUT', `/rule-sets/${id}`, data),
+  deleteRuleSet: (id: string) =>
+    request<void>('DELETE', `/rule-sets/${id}`),
+  addRuleToSet: (setId: string, data: CreateRuleInSetRequest) =>
+    request<ProtectionRule>('POST', `/rule-sets/${setId}/rules`, data),
+  updateRuleInSet: (setId: string, ruleId: string, data: UpdateRuleInSetRequest) =>
+    request<ProtectionRule>('PUT', `/rule-sets/${setId}/rules/${ruleId}`, data),
+  deleteRuleFromSet: (setId: string, ruleId: string) =>
+    request<void>('DELETE', `/rule-sets/${setId}/rules/${ruleId}`),
+
+  // Protection Rule Validation
+  validateProtectionRule: (data: ValidateRuleRequest) =>
+    request<RuleValidationResponse>('POST', '/protection/rules/validate', data),
+
+  // --- Pairing Projects ---
+  listPairingProjects: (status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request<PairingProject[]>('GET', `/pairing-projects${qs}`);
+  },
+  getPairingProject: (projectId: string) =>
+    request<PairingProject>('GET', `/pairing-projects/${projectId}`),
+  createPairingProject: (data: CreatePairingProjectRequest) =>
+    request<PairingProject>('POST', '/pairing-projects', data),
+  updatePairingProject: (projectId: string, data: UpdatePairingProjectRequest) =>
+    request<PairingProject>('PATCH', `/pairing-projects/${projectId}`, data),
+  deletePairingProject: (projectId: string) =>
+    request<void>('DELETE', `/pairing-projects/${projectId}`),
+
+  scanPairingProject: (projectId: string) =>
+    request<ScanResponse>('POST', `/pairing-projects/${projectId}/scan`),
+
+  listPairingFiles: (projectId: string, params?: { group_key?: string; role?: string; extension?: string; ignored?: boolean; search?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.group_key) sp.set('group_key', params.group_key);
+    if (params?.role) sp.set('role', params.role);
+    if (params?.extension) sp.set('extension', params.extension);
+    if (params?.ignored !== undefined) sp.set('ignored', String(params.ignored));
+    if (params?.search) sp.set('search', params.search);
+    const qs = sp.toString();
+    return request<PairingProjectFile[]>('GET', `/pairing-projects/${projectId}/files${qs ? `?${qs}` : ''}`);
+  },
+
+  getPairingFileContent: (projectId: string, fileId: string) =>
+    request<FileContentResponse>('GET', `/pairing-projects/${projectId}/files/${fileId}/content`),
+
+  getPairingGroups: (projectId: string, groupingMode?: string) => {
+    const qs = groupingMode ? `?grouping_mode=${encodeURIComponent(groupingMode)}` : '';
+    return request<FileGroupResponse[]>('GET', `/pairing-projects/${projectId}/groups${qs}`);
+  },
+
+  suggestPairingPairs: (projectId: string) =>
+    request<PairSuggestionResponse[]>('POST', `/pairing-projects/${projectId}/suggest-pairs`),
+
+  listPairingPairs: (projectId: string, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request<PairingProjectPair[]>('GET', `/pairing-projects/${projectId}/pairs${qs}`);
+  },
+  createPairingPair: (projectId: string, data: CreatePairRequest) =>
+    request<PairingProjectPair>('POST', `/pairing-projects/${projectId}/pairs`, data),
+  updatePairingPair: (projectId: string, pairId: string, data: UpdatePairRequest) =>
+    request<PairingProjectPair>('PATCH', `/pairing-projects/${projectId}/pairs/${pairId}`, data),
+  deletePairingPair: (projectId: string, pairId: string) =>
+    request<void>('DELETE', `/pairing-projects/${projectId}/pairs/${pairId}`),
+  getPairingPairPreview: (projectId: string, pairId: string) =>
+    request<PairPreviewResponse>('GET', `/pairing-projects/${projectId}/pairs/${pairId}/preview`),
+
+  // Alignment
+  getPairingAlignment: (projectId: string, pairId: string) =>
+    request<AlignmentResponse | null>('GET', `/pairing-projects/${projectId}/pairs/${pairId}/alignment`),
+  savePairingAlignment: (projectId: string, pairId: string, data: SaveAlignmentRequest) =>
+    request<AlignmentResponse>('POST', `/pairing-projects/${projectId}/pairs/${pairId}/alignment`, data),
+  previewPairingAlignment: (projectId: string, pairId: string, data: PreviewAlignmentRequest) =>
+    request<AlignmentPreviewResponse>('POST', `/pairing-projects/${projectId}/pairs/${pairId}/alignment/preview`, data),
+
+  // Learning
+  learnFromPairingPairs: (projectId: string, data: LearnFromPairsRequest) =>
+    request<LearnFromPairsResponse>('POST', `/pairing-projects/${projectId}/learn`, data),
 };
 
 export { ApiError };

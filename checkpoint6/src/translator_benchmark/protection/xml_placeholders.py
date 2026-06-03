@@ -1,20 +1,25 @@
+"""XML-style placeholder protection strategy.
+
+Replaces game tokens with ``<protected id="xml{N}"/>`` placeholders.
+Patterns are derived from ``BUILTIN_RULES_DATA`` (single source of truth).
+No hardcoded regex patterns are defined in this module.
+"""
+
 import re
-from typing import Dict
+from typing import Dict, List
+
+from translator_app.protection.builtin_rules import BUILTIN_RULES_DATA
+from translator_app.protection.engine import (
+    PlaceholderLeakInfo,
+    register_strategy_detector,
+)
 from ..domain.entities import ProtectedText
 
-#что не ждали, а вот они слева направо
-TOKEN_PATTERNS = [
-    r"\$[A-Za-z0-9_]+\$",                 # $VAR$
-    r"\[.+?\]",                           # [Root.GetName]
-    r"£[A-Za-z0-9_]+£",                   # £food£
-    r"§[A-Za-z0-9]|\§!",                  # §Y ... §!
-    r"§[A-Za-z0-9](?:.|[\r\n])*?§!",      # секции §Y...§!
-    r"\{[A-Za-z0-9_.:-]+\}",              # {VALUE}
-    r"%(?:\d+\$)?[sd]",                   # printf
-    r"\\n",                               # явные переносы
-]
-
-TOKEN_REGEX = re.compile("|".join(f"({p})" for p in TOKEN_PATTERNS), re.DOTALL)
+# Combined regex built from the canonical builtin rules
+TOKEN_REGEX = re.compile(
+    "|".join(f"({rule['pattern']})" for rule in BUILTIN_RULES_DATA),
+    re.DOTALL,
+)
 
 
 def protect_with_xml_placeholders(text: str) -> ProtectedText:
@@ -85,3 +90,37 @@ class XmlPlaceholdersProtectionStrategy:
 
 def build_xml_placeholders_strategy() -> XmlPlaceholdersProtectionStrategy:
     return XmlPlaceholdersProtectionStrategy()
+
+
+# ---------------------------------------------------------------------------
+# Strategy-aware leak detection for "xml_placeholders"
+# ---------------------------------------------------------------------------
+
+_XML_PH_RE = re.compile(r'<protected\s+id="xml(\d+)"\s*/>')
+
+
+def detect_xml_placeholders_leaks(
+    text: str,
+    mapping: Dict[str, str],
+) -> List[PlaceholderLeakInfo]:
+    """Detect unrestored ``<protected id="xml{N}"/>`` placeholders.
+
+    This is the detector for the benchmark ``"xml_placeholders"``
+    protection strategy.  Scans *text* for ``<protected id="xml{N}"/>``
+    tags whose IDs are missing from the restore *mapping*.
+    """
+    leaks: List[PlaceholderLeakInfo] = []
+    for m in _XML_PH_RE.finditer(text):
+        ph_id = f"xml{m.group(1)}"
+        if ph_id not in mapping:
+            leaks.append(PlaceholderLeakInfo(
+                placeholder_id=ph_id,
+                raw_match=m.group(0),
+                strategy_name="xml_placeholders",
+                mapping_size=len(mapping),
+            ))
+    return leaks
+
+
+# Register with the engine's dispatch table
+register_strategy_detector("xml_placeholders", detect_xml_placeholders_leaks)

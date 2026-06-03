@@ -65,9 +65,13 @@ class OutputAnalysisWorker:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def is_alive(self) -> bool:
+        """Return True if the worker thread is alive and accepting jobs."""
+        return self._thread is not None and self._thread.is_alive()
+
     def start(self) -> None:
         """Start the background worker thread."""
-        if self._thread is not None and self._thread.is_alive():
+        if self.is_alive():
             logger.warning("OutputAnalysisWorker already running")
             return
 

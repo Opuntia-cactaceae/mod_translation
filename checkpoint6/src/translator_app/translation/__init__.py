@@ -27,6 +27,11 @@ from translator_app.translation.core_adapter import (
 from translator_app.translation.runtime_adapter import RealRuntime
 from translator_app.translation.protection import ProtectionService
 from translator_app.translation.validation import TranslationValidator
+from translator_app.translation.placeholder_filter import (
+    PlaceholderOnlyFilter,
+    PlaceholderOnlyFilterResult,
+    SkippedProtectedUnit,
+)
 from translator_app.translation.task_planner import TaskPlanner
 from translator_app.translation.task_planner_models import (
     TranslationTask,
@@ -80,6 +85,9 @@ __all__ = [
     "RealRuntime",
     "ProtectionService",
     "TranslationValidator",
+    "PlaceholderOnlyFilter",
+    "PlaceholderOnlyFilterResult",
+    "SkippedProtectedUnit",
     "TaskPlanner",
     "TranslationTask",
     "TaskPlan",

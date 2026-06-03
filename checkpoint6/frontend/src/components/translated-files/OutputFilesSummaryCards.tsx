@@ -10,13 +10,17 @@ interface SummaryCard {
 }
 
 interface Props {
-  summary: OutputFilesSummaryResponse;
+  summary: OutputFilesSummaryResponse | null | undefined;
   loading?: boolean;
 }
 
 export default function OutputFilesSummaryCards({ summary, loading }: Props) {
   if (loading) {
     return <div className="loading"><span className="spinner" /> Loading summary...</div>;
+  }
+
+  if (!summary) {
+    return null;
   }
 
   const cards: SummaryCard[] = [

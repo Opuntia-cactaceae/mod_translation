@@ -134,6 +134,7 @@ describe('useCreateJobFields', () => {
         modelDirty: false,
         promptProfileNameDirty: false,
         protectionStrategyDirty: false,
+        ruleSetIdsDirty: false,
         validatorNameDirty: false,
         outputDirDirty: false,
         outputFilenameSuffixDirty: false,

@@ -13,6 +13,13 @@ import { STORAGE_KEYS } from '../../utils/storageKeys';
 /*  Public types                                                       */
 /* ------------------------------------------------------------------ */
 
+import type { JobModel } from '../../domain';
+
+/** Result returned by createDirectJob / createAndStartJob */
+export interface CreateJobResult {
+  job: JobModel;
+}
+
 export interface UseCreateJobFlowOptions {
   reloadJobs: () => Promise<void>;
   selectJob: (jobId: string) => void;
@@ -44,6 +51,7 @@ export interface CreateJobFormValues {
   singleUserTemplate?: string;
   logPrompts?: boolean;
   protectionStrategy: string;
+  ruleSetIds: string[];
   validatorName: string;
   outputDir: string;
   outputFilenameSuffix: string;
@@ -163,6 +171,7 @@ export function useCreateJobFlow(options: UseCreateJobFlowOptions) {
       promptProfileName: values.promptProfileName,
       ...promptOverrideFields,
       protectionStrategy: values.protectionStrategy,
+      ruleSetIds: values.ruleSetIds,
       validatorName: values.validatorName,
       outputDir: values.outputDir,
       outputFilenameSuffix: values.outputFilenameSuffix,
@@ -181,9 +190,13 @@ export function useCreateJobFlow(options: UseCreateJobFlowOptions) {
   // ---------------------------------------------------------------
   //  Internal: create job and optionally start it
   // ---------------------------------------------------------------
-  async function createAndStartJob(values: CreateJobFormValues, gameConfig: Record<string, unknown> | null | undefined): Promise<void> {
+  async function createAndStartJob(values: CreateJobFormValues, gameConfig: Record<string, unknown> | null | undefined): Promise<JobModel> {
     const rawPaths = values.filePaths.split('\n').map(s => s.trim()).filter(Boolean);
-    if (rawPaths.length === 0) return;
+
+    // If no paths in the textarea, use the backend draft selection
+    if (rawPaths.length === 0) {
+      return createJobUsingDraft(values, gameConfig);
+    }
 
     setCreatingJob(true);
     try {
@@ -243,6 +256,7 @@ export function useCreateJobFlow(options: UseCreateJobFlowOptions) {
       // Select job immediately (before reload) so trace panel opens without delay
       selectJob(mapped.id);
       await reloadJobs();
+      return mapped;
     } catch (err) {
       if (err instanceof ApiError) {
         showToast(err.message, 'error');
@@ -250,6 +264,40 @@ export function useCreateJobFlow(options: UseCreateJobFlowOptions) {
         showToast('Failed to create job', 'error');
       }
       throw err; // re-throw so callers can react
+    } finally {
+      setCreatingJob(false);
+    }
+  }
+
+  // ---------------------------------------------------------------
+  //  Draft-based job creation (no textarea paths)
+  //
+  //  When the textarea is empty, the form delegates to the backend
+  //  draft selection state via use_draft_selection=True.  The backend
+  //  fills file_paths and file_metadata from its persisted draft and
+  //  clears the draft after the job is created.
+  // ---------------------------------------------------------------
+  async function createJobUsingDraft(values: CreateJobFormValues, gameConfig: Record<string, unknown> | null | undefined): Promise<JobModel> {
+    setCreatingJob(true);
+    try {
+      const newJob = await api.createJob({
+        file_paths: [],
+        name: values.jobName || undefined,
+        config: buildJobConfig(values, gameConfig),
+        use_draft_selection: true,
+      });
+      const mapped = mapJobResponse(newJob);
+      showToast(`Job created: ${mapped.id.slice(0, 8)}`);
+      selectJob(mapped.id);
+      await reloadJobs();
+      return mapped;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showToast(err.message, 'error');
+      } else {
+        showToast('Failed to create job from draft', 'error');
+      }
+      throw err;
     } finally {
       setCreatingJob(false);
     }
@@ -308,8 +356,8 @@ export function useCreateJobFlow(options: UseCreateJobFlowOptions) {
   //  Direct create (no preview)
   // ---------------------------------------------------------------
   const createDirectJob = useCallback(
-    async (values: CreateJobFormValues, gameConfig: Record<string, unknown> | null | undefined) => {
-      await createAndStartJob(values, gameConfig);
+    async (values: CreateJobFormValues, gameConfig: Record<string, unknown> | null | undefined): Promise<JobModel> => {
+      return createAndStartJob(values, gameConfig);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [selectedProfileId, reloadJobs, selectJob, showToast],

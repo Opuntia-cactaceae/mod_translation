@@ -30,10 +30,20 @@ from translator_app.translation.adapter_models import (
     EMPTY_TRANSLATION,
     CHATBOT_REPLY_DETECTED,
     INVALID_RESPONSE_FORMAT,
+    PLACEHOLDER_RESTORE_FAILED,
 )
 from translator_app.translation.trace_models import TraceEventType
 from translator_app.translation.runtime_adapter import detect_chatbot_reply
 from translator_app.translation.validation import TranslationValidator
+from translator_app.translation.placeholder_filter import PlaceholderOnlyFilter
+from translator_app.translation.protection_context import RuntimeProtectionContext
+from translator_app.protection.engine import PlaceholderLeakInfo
+from translator_app.protection.metadata import ProtectionSnapshotBuilder
+from translator_app.protection.metadata.models import (
+    PlaceholderInfo,
+    dataclass_to_dict,
+)
+from translator_app.protection.ranges import SourceRange
 
 logger = logging.getLogger(__name__)
 
@@ -149,21 +159,28 @@ class TranslationCoreAdapter:
         diagnostics_service: Optional[Any] = None,
         secrets_service: Optional[Any] = None,
         trace_service: Optional[Any] = None,
+        protection_snapshot_repo: Optional[Any] = None,
     ):
         """
         Args:
             runtime: Translation runtime. If None, resolved lazily from
                      config — ``MockRuntime`` for mock provider, otherwise
                      ``RealRuntime`` for real LLM providers.
-            protection_service: Optional protection service for token
-                                protect/restore.  If None, protection is
-                                skipped (no-op).
+            protection_service: Optional ``ProtectionService`` for rule-set-
+                                driven token protect/restore.  If None,
+                                protection is skipped (no-op).
             logging_service: Optional LoggingService instance for event logging.
             diagnostics_service: Optional DiagnosticsService instance.
             secrets_service: Optional SecretsService for resolving API keys
                              when using a real provider.
             trace_service: Optional TranslationTraceService for structured
                            trace event recording.
+            protection_snapshot_repo: Optional ``ProtectionSnapshotRepository``
+                                      for persisting full snapshots.  When
+                                      provided, snapshots are saved to the
+                                      database at creation time.  Save failures
+                                      are logged but do not interrupt
+                                      translation.
         """
         self._explicit_runtime = runtime
         self._runtime: Optional[Any] = runtime  # None = lazy init
@@ -172,6 +189,13 @@ class TranslationCoreAdapter:
         self._diag = diagnostics_service
         self._secrets = secrets_service
         self._trace = trace_service
+        self._snapshot_builder = ProtectionSnapshotBuilder()
+        self._snapshot_repo = protection_snapshot_repo
+        # Lazy-built: populated on first batch via _ensure_protection_snapshot().
+        # None means "not yet built".  Reset per-translation-run so that
+        # different jobs (with different configs) get correct snapshots.
+        self._protection_snapshot_ctx: Optional[RuntimeProtectionContext] = None
+        self._placeholder_filter = PlaceholderOnlyFilter()
 
     # ------------------------------------------------------------------
     # High-level API
@@ -198,6 +222,7 @@ class TranslationCoreAdapter:
         stats = AdapterStats(total_units=len(units))
         diagnostics: List[AdapterDiagnostic] = []
 
+        self._reset_protection_snapshot()
         batches = self._split_into_batches(units, config.batch_size)
 
         all_done_units: List[TranslationUnit] = []
@@ -221,13 +246,23 @@ class TranslationCoreAdapter:
         self,
         units: List[TranslationUnit],
         config: TranslationConfig,
+        job_id: Optional[str] = None,
     ) -> AdapterRunResult:
         """Translate a single batch of units (same as one chunk of
         ``translate_units`` but without splitting into sub-batches).
 
+        Args:
+            units: Translation units to process.
+            config: Translation configuration.
+            job_id: Optional job ID.  When provided, the protection
+                snapshot is persisted to the database and the
+                ``PROTECTION_SNAPSHOT_CREATED`` trace event includes
+                the correct ``job_id`` so that analysis can look it up.
+
         Useful when the caller has already grouped units.
         """
-        return self._process_one_batch(units, config, batch_idx=0)
+        self._reset_protection_snapshot()
+        return self._process_one_batch(units, config, batch_idx=0, job_id=job_id)
 
     def translate_single(
         self,
@@ -247,10 +282,12 @@ class TranslationCoreAdapter:
             Translated text string.
         """
         text = unit.source_text
-        protected_text, protection_mapping = self._protect(text, config)
+        self._reset_protection_snapshot()
+        protected_text, protection_mapping, _ = self._protect(text, config)
         self._ensure_runtime(config)
         result_text = self._runtime.translate_single(protected_text)
-        restored = self._restore(result_text, protection_mapping, config=config)
+        restored = self._restore(result_text, protection_mapping, config=config,
+                                 row_id=getattr(unit, "entry_id", "") or "")
         return restored
 
     # ------------------------------------------------------------------
@@ -262,6 +299,7 @@ class TranslationCoreAdapter:
         task: Any,  # TranslationTask
         all_units: List[TranslationUnit],
         config: TranslationConfig,
+        job_id: Optional[str] = None,
     ) -> AdapterRunResult:
         """Process a single ``TranslationTask`` by filtering the units
         that belong to it, translating them, and returning the result.
@@ -290,7 +328,7 @@ class TranslationCoreAdapter:
                     )
                 ],
             )
-        return self._process_one_batch(task_units, config, task.batch_index)
+        return self._process_one_batch(task_units, config, task.batch_index, job_id=job_id)
 
     def process_plan(
         self,
@@ -356,7 +394,7 @@ class TranslationCoreAdapter:
         if config is None:
             config = TranslationConfig()
 
-        result = self.process_task(task, all_units, config)
+        result = self.process_task(task, all_units, config, job_id=job.id)
 
         batch_result = {
             "completed": result.stats.translated_units,
@@ -378,10 +416,14 @@ class TranslationCoreAdapter:
         batch_units: List[TranslationUnit],
         config: TranslationConfig,
         batch_idx: int = 0,
+        job_id: Optional[str] = None,
     ) -> AdapterRunResult:
         """Process one batch of units through the full pipeline:
 
         protect -> batch translate -> validate -> fallback? -> restore -> map back
+
+        If *job_id* is provided and a ``ProtectionSnapshotRepository`` is
+        configured, the protection snapshot is persisted to the database.
         """
         self._ensure_runtime(config)
         stats = AdapterStats(total_units=len(batch_units), batch_count=1)
@@ -389,11 +431,18 @@ class TranslationCoreAdapter:
 
         unit_ids = [u.entry_id for u in batch_units if u.entry_id]
 
+        # --- Ensure protection snapshot is built ---
+        protection_ctx = self._ensure_protection_snapshot(config, batch_idx, unit_ids, job_id)
+
         # --- Trace: batch_started ---
         if self._trace is not None:
             batch_data = {"unit_ids": unit_ids}
             if config.prompt.log_prompts:
                 batch_data["source_texts"] = [u.source_text for u in batch_units]
+            # Attach protection snapshot metadata
+            if protection_ctx.has_snapshot:
+                batch_data["protection_snapshot_hash"] = protection_ctx.snapshot_hash
+                batch_data["protection_strategy"] = protection_ctx.strategy_name
             self._trace.add_event(
                 event_type=TraceEventType.BATCH_STARTED,
                 batch_index=batch_idx,
@@ -413,11 +462,15 @@ class TranslationCoreAdapter:
 
         # --- Protect ---
         for row in rows:
-            protected, protection_mapping = self._protect(row.source_text, config)
+            protected, protection_mapping, source_ranges = self._protect(row.source_text, config)
             row.protected_text = protected
             # Store protection state for restore
             row.metadata["_protection_mapping"] = protection_mapping
-            row.metadata["_protection_strategy"] = config.protection.strategy or "none"
+            row.metadata["_protection_source_ranges"] = source_ranges
+            row.metadata["_protection_strategy"] = "rule_set" if config.protection.enabled and config.protection.rule_set_ids else "none"
+
+        # --- Build placeholder registry from all rows' mappings ---
+        self._populate_placeholder_registry(protection_ctx, rows)
 
         # --- Trace: protected texts (debug only) ---
         if self._trace is not None and config.prompt.log_prompts:
@@ -432,8 +485,49 @@ class TranslationCoreAdapter:
                 data={"protected_texts": protected_info},
             )
 
-        # --- Batch translate ---
-        batch_result = self._call_batch(rows, config, batch_idx)
+        # --- Placeholder-only filter ---
+        filter_result = self._placeholder_filter.filter_rows(rows)
+
+        if filter_result.skipped_items:
+            if filter_result.translatable_items:
+                # Partial: only send real-content rows to the translator
+                batch_result = self._call_batch(
+                    filter_result.translatable_items, config, batch_idx
+                )
+                if batch_result.success:
+                    batch_result = self._placeholder_filter.merge_batch_result(
+                        batch_result, rows, filter_result.skipped_items
+                    )
+                # Fallback path (if batch_result.success is False) will handle
+                # all rows via _do_fallback, including placeholder-only rows.
+                # Those are fixed up in the post-processing step below.
+            else:
+                # All rows are placeholder-only — skip LLM call entirely
+                batch_result = (
+                    self._placeholder_filter.make_placeholder_only_batch_result(rows)
+                )
+                # --- Trace: all skipped ---
+                if self._trace is not None:
+                    self._trace.add_event(
+                        event_type=TraceEventType.RUNTIME_REQUEST_STARTED,
+                        batch_index=batch_idx,
+                        unit_ids=unit_ids,
+                        provider=config.runtime.provider,
+                        model=config.runtime.model,
+                        message=f"All {len(rows)} units skipped (placeholder-only)",
+                        data={"reason": "placeholder_only"},
+                    )
+                    for item in filter_result.skipped_items:
+                        self._trace.add_event(
+                            event_type=TraceEventType.UNIT_TRANSLATED,
+                            batch_index=batch_idx,
+                            unit_ids=[rows[item.original_index].row_id],
+                            message=f"Unit skipped (placeholder-only)",
+                            data={"skipped_reason": "placeholder_only"},
+                        )
+        else:
+            # No placeholder-only rows — normal pipeline
+            batch_result = self._call_batch(rows, config, batch_idx)
 
         if batch_result.success:
             # --- Trace: response_parsed ---
@@ -465,7 +559,7 @@ class TranslationCoreAdapter:
                         message=f"Chatbot/meta reply detected in batch response",
                     ))
                     # Fall back to single translation
-                    fallback_diag = self._do_fallback(rows, config)
+                    fallback_diag = self._do_fallback(rows, config, diagnostics=diagnostics)
                     diagnostics.append(fallback_diag)
                     stats.fallback_count += len(rows)
                     stats.translated_units = sum(1 for r in rows if r.translated_text)
@@ -475,8 +569,16 @@ class TranslationCoreAdapter:
                     # Restore texts first
                     for row, translated in zip(rows, batch_result.translated_texts):
                         mapping = row.metadata.get("_protection_mapping", {})
-                        restored = self._restore(translated, mapping, config=config)
+                        restored = self._restore(translated, mapping, config=config,
+                                                 row_id=row.row_id)
                         row.translated_text = restored
+
+                    # --- Leak detection (strategy-aware) ---
+                    for row, translated in zip(rows, batch_result.translated_texts):
+                        mapping = row.metadata.get("_protection_mapping", {})
+                        self._detect_and_handle_restore_leaks(
+                            translated, mapping, row, config, diagnostics,
+                        )
 
                     # --- Content validator ---
                     is_content_valid, content_diag = self._run_content_validator(
@@ -486,18 +588,28 @@ class TranslationCoreAdapter:
                         diagnostics.append(content_diag)
 
                     if is_content_valid:
-                        stats.translated_units += len(rows)
-                        # --- Trace: unit_translated (one event per row) ---
+                        translated_count = sum(1 for r in rows if r.translated_text)
+                        stats.translated_units += translated_count
+                        stats.failed_units += len(rows) - translated_count
+                        # --- Trace: unit_translated (one event per successfully restored row) ---
                         if self._trace is not None:
                             for row in rows:
-                                self._trace.add_event(
-                                    event_type=TraceEventType.UNIT_TRANSLATED,
-                                    batch_index=batch_idx,
-                                    unit_ids=[row.row_id],
-                                    provider=config.runtime.provider,
-                                    model=config.runtime.model,
-                                    message=f"Unit {row.row_id} translated",
-                                )
+                                if row.translated_text:
+                                    self._trace.add_event(
+                                        event_type=TraceEventType.UNIT_TRANSLATED,
+                                        batch_index=batch_idx,
+                                        unit_ids=[row.row_id],
+                                        provider=config.runtime.provider,
+                                        model=config.runtime.model,
+                                        message=f"Unit {row.row_id} translated",
+                                    )
+                                else:
+                                    self._trace.add_event(
+                                        event_type=TraceEventType.UNIT_FAILED,
+                                        batch_index=batch_idx,
+                                        unit_ids=[row.row_id],
+                                        message=f"Unit {row.row_id} failed (placeholder restore)",
+                                    )
                     else:
                         # Content validation failed -> fallback to single
                         for row in rows:
@@ -511,7 +623,7 @@ class TranslationCoreAdapter:
                                 message="Content validation failed, falling back to single translation",
                                 data={"reason": content_diag.message if content_diag else "validation_failed"},
                             )
-                        fallback_diag = self._do_fallback(rows, config)
+                        fallback_diag = self._do_fallback(rows, config, diagnostics=diagnostics)
                         diagnostics.append(fallback_diag)
                         stats.fallback_count += len(rows)
                         stats.translated_units = sum(
@@ -538,7 +650,7 @@ class TranslationCoreAdapter:
                         message="Count mismatch, falling back to single translation",
                         data={"reason": validation_diag.message if validation_diag else "count_mismatch"},
                     )
-                fallback_diag = self._do_fallback(rows, config)
+                fallback_diag = self._do_fallback(rows, config, diagnostics=diagnostics)
                 diagnostics.append(fallback_diag)
                 stats.fallback_count += len(rows)
                 # Count successes after fallback
@@ -586,7 +698,7 @@ class TranslationCoreAdapter:
                     message="Batch failed, falling back to single translation",
                     data={"error": batch_error},
                 )
-            fallback_diag = self._do_fallback(rows, config)
+            fallback_diag = self._do_fallback(rows, config, diagnostics=diagnostics)
             diagnostics.append(fallback_diag)
             self._log_fallback(fallback_diag)
             stats.fallback_count += len(rows)
@@ -601,6 +713,19 @@ class TranslationCoreAdapter:
                     batch_index=batch_idx,
                     unit_ids=unit_ids,
                     message=f"Fallback done: {stats.translated_units} ok, {stats.failed_units} failed",
+                )
+
+        # --- Placeholder-only post-processing: ensure skipped rows have
+        #     their protected text properly restored, even if a fallback
+        #     path produced corrupted text for them. ---
+        if filter_result.skipped_items:
+            for item in filter_result.skipped_items:
+                row = rows[item.original_index]
+                row.translated_text = self._restore(
+                    row.protected_text,
+                    row.metadata.get("_protection_mapping", {}),
+                    config=config,
+                    row_id=row.row_id,
                 )
 
         # --- Trace: unit_failed for rows that have no translated_text ---
@@ -710,6 +835,153 @@ class TranslationCoreAdapter:
             self._runtime = MockRuntime()
 
     # ------------------------------------------------------------------
+    # Internal: lazy protection snapshot creation
+    # ------------------------------------------------------------------
+
+    def _ensure_protection_snapshot(
+        self,
+        config: TranslationConfig,
+        batch_idx: int = 0,
+        unit_ids: Optional[list[str]] = None,
+        job_id: Optional[str] = None,
+    ) -> RuntimeProtectionContext:
+        """Lazily build and cache a ``RuntimeProtectionContext``.
+
+        The snapshot is built once per translation run (reset when
+        ``translate_units`` / ``translate_batch`` is called).  It
+        captures:
+
+        * The rule set IDs from ``config.protection.rule_set_ids``.
+        * All enabled rules from the active rule sets.
+        * The builtin token schema.
+
+        If a ``ProtectionSnapshotRepository`` is available and a
+        ``job_id`` is provided, the full snapshot is persisted to the
+        database.  Save failures are logged but do not interrupt
+        translation.
+
+        If the snapshot build fails, a minimal fallback context is
+        returned so that the caller never crashes.  A warning is logged.
+
+        Returns:
+            ``RuntimeProtectionContext`` — always valid, never ``None``.
+        """
+        # If already built for this run, return cached version.
+        # The context is reset at the start of each translate_units/batch
+        # call via ``_reset_protection_snapshot()``.
+        if self._protection_snapshot_ctx is not None:
+            return self._protection_snapshot_ctx
+
+        rule_set_ids = config.protection.rule_set_ids
+        protection_enabled = config.protection.enabled
+        strategy_name = "rule_set" if protection_enabled and rule_set_ids else "none"
+
+        # Collect active rules from rule sets via the ProtectionService
+        active_rules: list = []
+
+        # Build the ProtectionSnapshot via the builder
+        try:
+            snapshot = self._snapshot_builder.build(
+                strategy_name=strategy_name,
+                profile_id=None,  # No profile-id in current runtime config
+                rules=None,  # Rules come from builtin schema now
+                rule_set_ids=rule_set_ids if protection_enabled else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to build ProtectionSnapshot: strategy=%s, rule_set_ids=%s, error=%s",
+                strategy_name, rule_set_ids, exc,
+            )
+            # Fallback context with minimal info
+            ctx = RuntimeProtectionContext(
+                snapshot=None,
+                snapshot_hash="",
+                strategy_name=strategy_name,
+                applied_rule_count=0,
+                custom_rules_enabled=protection_enabled,
+            )
+            self._protection_snapshot_ctx = ctx
+            return ctx
+
+        # Extract schema_hash from snapshot
+        schema_hash = ""
+        if snapshot.token_schema is not None:
+            schema_hash = snapshot.token_schema.schema_hash or ""
+
+        ctx = RuntimeProtectionContext(
+            snapshot=snapshot,
+            snapshot_hash=snapshot.snapshot_hash,
+            strategy_name=snapshot.strategy_name,
+            profile_id=snapshot.profile_id,
+            applied_rule_count=len(snapshot.applied_rules),
+            custom_rules_enabled=protection_enabled,
+            schema_hash=schema_hash,
+        )
+        self._protection_snapshot_ctx = ctx
+
+        # --- Persist full snapshot to database ---
+        if self._snapshot_repo is not None and job_id:
+            try:
+                persisted = self._snapshot_repo.save_snapshot(
+                    job_id=job_id,
+                    snapshot=snapshot,
+                )
+                ctx.persisted = persisted
+                if persisted:
+                    logger.debug(
+                        "ProtectionSnapshot %s persisted for job %s",
+                        ctx.snapshot_hash[:12], job_id,
+                    )
+                else:
+                    logger.debug(
+                        "ProtectionSnapshot %s already exists (skipped duplicate)",
+                        ctx.snapshot_hash[:12],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to persist protection snapshot for job %s: %s",
+                    job_id, exc,
+                )
+                ctx.persisted = False
+
+        # --- Structured logging ---
+        logger.info(
+            "ProtectionSnapshot created: strategy=%s hash=%s rules=%d custom=%s persisted=%s",
+            ctx.strategy_name,
+            ctx.snapshot_hash,
+            ctx.applied_rule_count,
+            ctx.custom_rules_enabled,
+            ctx.persisted,
+        )
+
+        # --- Trace: PROTECTION_SNAPSHOT_CREATED ---
+        if self._trace is not None:
+            self._trace.add_event(
+                event_type=TraceEventType.PROTECTION_SNAPSHOT_CREATED,
+                job_id=job_id or "",
+                batch_index=batch_idx,
+                unit_ids=unit_ids or [],
+                provider=getattr(config.runtime, "provider", ""),
+                model=getattr(config.runtime, "model", ""),
+                message=(
+                    f"Protection snapshot created: strategy={ctx.strategy_name}, "
+                    f"rules={ctx.applied_rule_count}, hash={ctx.snapshot_hash[:12]}..."
+                ),
+                data=ctx.to_trace_data(),
+            )
+
+        return ctx
+
+    def _reset_protection_snapshot(self) -> None:
+        """Reset the cached protection snapshot.
+
+        Called at the start of each ``translate_units`` / ``translate_batch``
+        / ``translate_single`` invocation so that a fresh snapshot is built
+        for the current config.
+        """
+        self._protection_snapshot_ctx = None
+
+    # ------------------------------------------------------------------
     # Internal: helpers
     # ------------------------------------------------------------------
 
@@ -775,32 +1047,241 @@ class TranslationCoreAdapter:
         return updated
 
     def _protect(self, text: str, config: TranslationConfig) -> tuple:
-        """Protect text using the configured protection service, if available.
+        """Protect text using the configured rule sets.
 
-        Uses ``config.protection.strategy`` to pick the strategy.
-        Returns (protected_text, state_dict).  Falls back to (text, {})
-        if no protection service is configured.
+        Uses the ProtectionService with ``config.protection.rule_set_ids``.
+        If protection is disabled or no rule sets are configured, returns
+        the original text unchanged.
+
+        Returns
+        -------
+        ``(protected_text, mapping, source_ranges)``
+            Falls back to ``(text, {}, [])`` if no protection is configured.
+            ``source_ranges`` is a list of ``SourceRange`` objects with
+            per-placeholder metadata (rule_id, rule_kind, token_type,
+            source positions).  Empty list when protection is disabled.
         """
-        if self._protection is not None:
-            try:
-                strategy = config.protection.strategy or "none"
-                return self._protection.protect(text, strategy_name=strategy)
-            except Exception as exc:
-                logger.warning("Protection protect() failed, using raw text: %s", exc)
-        return text, {}
+        if not config.protection.enabled:
+            return text, {}, []
 
-    def _restore(self, text: str, state: dict, config: TranslationConfig = None) -> str:
+        if self._protection is None:
+            return text, {}, []
+
+        rule_set_ids = config.protection.rule_set_ids
+
+        try:
+            protected, mapping, source_ranges, _ = self._protection.protect_with_details(
+                text, rule_set_ids=rule_set_ids or None,
+            )
+            return protected, mapping, source_ranges
+        except Exception as exc:
+            logger.warning(
+                "Protection protect() failed, using raw text: "
+                "config_enabled=%s, text_len=%d, rule_set_ids=%s, error=%s",
+                config.protection.enabled,
+                len(text),
+                config.protection.rule_set_ids,
+                exc,
+            )
+            return text, {}, []
+
+    def _restore(self, text: str, state: dict, config: TranslationConfig = None, row_id: str = "") -> str:
         """Restore protected tokens in translated text.
 
-        Falls back to returning text unchanged if no protection service.
+        Uses the unified ``ProtectionService.restore`` which handles all
+        ``<PH id="r{N}"/>`` placeholders.
+
+        Falls back to returning text unchanged if no protection services.
         """
-        if self._protection is not None:
-            try:
-                strategy = (config.protection.strategy or "none") if config else "none"
-                return self._protection.restore(text, state, strategy_name=strategy)
-            except Exception as exc:
-                logger.warning("Protection restore() failed, using raw text: %s", exc)
-        return text
+        if self._protection is None:
+            return text
+
+        # Debug log: capture input for traceability
+        if "<PH" in text:
+            logger.debug(
+                "Restore input for row=%s contains <PH tags: "
+                "mapping_size=%d, text_preview=%r",
+                row_id, len(state) if isinstance(state, dict) else 0,
+                text[:150],
+            )
+
+        try:
+            result = self._protection.restore(text, state)
+        except Exception as exc:
+            logger.warning(
+                "Protection restore() failed, using raw text: "
+                "mapping_size=%d, text_len=%d, row=%s, error=%s",
+                len(state) if isinstance(state, dict) else 0,
+                len(text), row_id, exc,
+            )
+            return text
+
+        # --- Invariant warning (no hard-strip) ---
+        if "<PH" in result:
+            logger.error(
+                "PLACEHOLDER_RESTORE_INVARIANT_VIOLATED: "
+                "row=%s, mapping_size=%d, text_len=%d, "
+                "source_preview=%r, "
+                "result_preview=%r",
+                row_id,
+                len(state) if isinstance(state, dict) else 0,
+                len(result),
+                text[:120],
+                result[:120],
+            )
+
+        return result
+
+    @staticmethod
+    def _resolve_strategy_name(config: TranslationConfig) -> str:
+        """Resolve active protection strategy name from *config*.
+
+        Returns ``"none"`` when protection is disabled.  Returns
+        ``"rule_set"`` when protection is enabled (with or without
+        rule sets — if no rule sets are configured, protection
+        simply produces an empty mapping, but the strategy is still
+        ``"rule_set"`` from the adapter's perspective).
+
+        This method is the single point of strategy-name resolution
+        for leak detection dispatch.  When new strategies are added,
+        this is where the config→strategy mapping is updated.
+        """
+        if not config.protection.enabled:
+            return "none"
+        return "rule_set"
+
+    def _detect_and_handle_restore_leaks(
+        self,
+        raw_model_output: str,
+        mapping: dict,
+        row: AdapterRow,
+        config: TranslationConfig,
+        diagnostics: List[AdapterDiagnostic],
+    ) -> None:
+        """Detect unrestored placeholders and fail the row if found.
+
+        Uses ``ProtectionEngine.detect_unrestored_placeholders()`` with
+        **strategy-aware dispatch**: the strategy name is resolved from
+        *config* (``"rule_set"`` when protection is enabled with rule
+        sets, ``"none"`` otherwise) and passed to the engine, which
+        dispatches to the correct detector for that strategy.
+
+        When leaks are detected:
+        * ``row.translated_text`` is set to ``None`` (unit is failed).
+        * A ``PLACEHOLDER_RESTORE_FAILED`` diagnostic is appended.
+        * Debug info (leaked IDs, raw matches, model output) is stored
+          in ``row.metadata["_restore_leak_info"]`` for traceability.
+        """
+        from translator_app.protection.engine import ProtectionEngine
+
+        strategy_name = self._resolve_strategy_name(config)
+        leaks = ProtectionEngine.detect_unrestored_placeholders(
+            raw_model_output, mapping,
+            strategy_name=strategy_name,
+        )
+        if not leaks:
+            return
+
+        leak_ids = [l.placeholder_id for l in leaks]
+        raw_matches = [l.raw_match for l in leaks]
+
+        diagnostics.append(AdapterDiagnostic(
+            level="error",
+            code=PLACEHOLDER_RESTORE_FAILED,
+            message=(
+                f"Placeholder restore failed for row '{row.row_id}': "
+                f"{len(leaks)} unrestored placeholder(s): {leak_ids}. "
+                f"Raw matches: {raw_matches}. "
+                f"Mapping size: {len(mapping)}."
+            ),
+            unit_id=row.row_id,
+        ))
+
+        # Store debug info for observability
+        row.metadata["_restore_leak_info"] = {
+            "leaked_ids": leak_ids,
+            "raw_matches": raw_matches,
+            "mapping_size": len(mapping),
+        }
+        row.metadata["_restore_model_output"] = raw_model_output
+
+        # Mark row as failed — corrupted text must not reach final output
+        row.translated_text = None
+        row.error_message = (
+            f"PLACEHOLDER_RESTORE_FAILED: {len(leaks)} unrestored "
+            f"placeholder(s): {', '.join(leak_ids)}"
+        )
+
+    @staticmethod
+    def _populate_placeholder_registry(
+        ctx: RuntimeProtectionContext,
+        rows: List[AdapterRow],
+    ) -> None:
+        """Build placeholder registry from per-row protection mappings.
+
+        Collects all ``_protection_mapping`` entries from every row and
+        converts them into serialised ``PlaceholderInfo`` dicts stored
+        on the runtime context's ``placeholder_registry``.
+
+        When ``_protection_source_ranges`` is available (D3+), uses the
+        per-placeholder metadata (rule_id, rule_kind, token_type, source
+        positions) from the ProtectionEngine source ranges instead of the
+        generic ``rule_set_token`` / ``rule_set`` fallback.
+
+        Backward compatible: if source_ranges are absent, falls back to
+        the old derivation (``rule_set_token`` / ``rule_set``).
+
+        This method is idempotent — duplicate placeholder IDs (same key)
+        produce a single entry.
+        """
+        registry: dict = {}
+
+        for row in rows:
+            mapping = row.metadata.get("_protection_mapping", {})
+            if not isinstance(mapping, dict):
+                continue
+
+            # Build lookup from optional source_ranges
+            source_ranges: List[SourceRange] = row.metadata.get("_protection_source_ranges", [])
+            sr_by_ph_id: Dict[str, SourceRange] = {}
+            if source_ranges:
+                for sr in source_ranges:
+                    if isinstance(sr, SourceRange) and sr.placeholder_id:
+                        sr_by_ph_id[sr.placeholder_id] = sr
+
+            for ph_id, original_text in mapping.items():
+                if ph_id in registry:
+                    continue  # already registered
+
+                sr = sr_by_ph_id.get(ph_id)
+                if sr is not None:
+                    # Rich metadata from ProtectionEngine source ranges
+                    token_type = sr.token_type
+                    rule_id = sr.rule_id
+                    source_start = sr.start
+                    source_end = sr.end
+                else:
+                    # Fallback: use prefix-based derivation (old behaviour)
+                    if ph_id.startswith("r"):
+                        token_type = "rule_set_token"
+                        rule_id = "rule_set"
+                    else:
+                        token_type = "unknown"
+                        rule_id = "unknown"
+                    source_start = None
+                    source_end = None
+
+                info = PlaceholderInfo(
+                    placeholder_id=ph_id,
+                    token_type=token_type,
+                    original_text=str(original_text) if original_text is not None else "",
+                    source_span_start=source_start,
+                    source_span_end=source_end,
+                    rule_id=rule_id,
+                )
+                registry[ph_id] = dataclass_to_dict(info)
+
+        ctx.placeholder_registry = registry
 
     def _call_batch(
         self,
@@ -977,12 +1458,24 @@ class TranslationCoreAdapter:
         self,
         rows: List[AdapterRow],
         config: TranslationConfig,
+        diagnostics: Optional[List[AdapterDiagnostic]] = None,
     ) -> AdapterDiagnostic:
         """Fallback: translate each row via single translation.
 
         Updates ``translated_text`` on each row in-place.
         Returns a diagnostic summarising the fallback.
+
+        If *diagnostics* is provided, per-row ``PLACEHOLDER_RESTORE_FAILED``
+        diagnostics are appended when leak detection fails.
+
+        NOTE: Unlike the batch path, this method does NOT run
+        ``_run_content_validator`` (which operates on protected-level
+        ``<PH>`` tags).  Instead, it relies on leak detection
+        (surviving ``<PH>`` tags) AND placeholder-preservation
+        checking (missing original placeholder texts in restored output).
         """
+        if diagnostics is None:
+            diagnostics = []
         success_count = 0
         fail_count = 0
 
@@ -999,9 +1492,44 @@ class TranslationCoreAdapter:
                                    row.source_text[:40])
                 else:
                     mapping = row.metadata.get("_protection_mapping", {})
-                    row.translated_text = self._restore(translated, mapping, config=config)
+                    row.translated_text = self._restore(translated, mapping, config=config,
+                                                        row_id=row.row_id)
                     if translated:
-                        success_count += 1
+                        # Leak detection on the raw model output
+                        self._detect_and_handle_restore_leaks(
+                            translated, mapping, row, config, diagnostics,
+                        )
+
+                        # Check for lost placeholders in restored text
+                        # (placeholders that the LLM dropped entirely, so
+                        # restore() could not recover them).  This catches
+                        # cases like trailing bracket placeholders that the
+                        # LLM omits from the response.
+                        if row.translated_text is not None:
+                            lost = self._check_restored_placeholder_preservation(
+                                row.translated_text, mapping,
+                            )
+                            if lost:
+                                row.translated_text = None
+                                row.error_message = (
+                                    f"Lost {len(lost)} placeholder(s) "
+                                    f"in fallback translation: {lost[:5]}"
+                                )
+                                fail_count += 1
+                                diagnostics.append(AdapterDiagnostic(
+                                    level="error",
+                                    code=PLACEHOLDER_RESTORE_FAILED,
+                                    message=(
+                                        f"Fallback lost {len(lost)} placeholder(s) "
+                                        f"for row '{row.row_id}': {lost[:5]}"
+                                    ),
+                                    unit_id=row.row_id,
+                                ))
+                            else:
+                                success_count += 1
+                        else:
+                            # Row was already failed by leak detection
+                            fail_count += 1
                     else:
                         row.error_message = "Fallback returned empty translation"
                         fail_count += 1
@@ -1020,6 +1548,34 @@ class TranslationCoreAdapter:
                 f"{success_count} succeeded, {fail_count} failed."
             ),
         )
+
+    @staticmethod
+    def _check_restored_placeholder_preservation(
+        restored_text: str,
+        mapping: Dict[str, str],
+    ) -> List[str]:
+        """Verify all original placeholder texts appear in restored text.
+
+        Compares each original placeholder text from the protection mapping
+        against the restored (post-restore) translation.  Any original text
+        that is absent from the restored output was dropped by the LLM (the
+        ``<PH>`` tag never reached restore).
+
+        Args:
+            restored_text:
+                The restored translated text (with original game tokens).
+            mapping:
+                Protection mapping ``{ph_id: original_text, ...}``.
+
+        Returns:
+            List of missing original placeholder texts (empty = all present).
+        """
+        if not mapping or not restored_text:
+            return []
+        return [
+            orig for orig in mapping.values()
+            if orig not in restored_text
+        ]
 
     # ------------------------------------------------------------------
     # Chatbot reply detection

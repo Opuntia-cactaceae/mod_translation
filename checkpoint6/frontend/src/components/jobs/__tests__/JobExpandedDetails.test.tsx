@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import React from 'react';
 import type { JobModel } from '../../../domain';
 import type { JobActionsApi, JobRecoveryApi } from '../../../hooks/jobs/types';
@@ -276,7 +276,7 @@ describe('JobExpandedDetails', () => {
       expect(screen.getByText('Use Cache')).toBeTruthy();
       expect(screen.getByText('Save Raw Responses')).toBeTruthy();
       expect(screen.getByText('Prompt Profile')).toBeTruthy();
-      expect(screen.getByText('Protection Strategy')).toBeTruthy();
+      expect(screen.getByText('Protection')).toBeTruthy();
       expect(screen.getByText('Validator')).toBeTruthy();
     });
 
@@ -346,11 +346,13 @@ describe('JobExpandedDetails', () => {
     });
 
     it('renders Save Config and Cancel buttons', async () => {
-      // Use pending job so Actions section has no Cancel button
       const job = createJob({ status: 'pending' });
       await renderDetails({ job, editing: true });
       expect(screen.getByText('Save Config')).toBeTruthy();
-      expect(screen.getByText('Cancel')).toBeTruthy();
+      // Cancel also appears in Actions section (Start + Cancel for pending jobs),
+      // so use getAllByText to confirm at least one exists
+      const cancelButtons = screen.getAllByText('Cancel');
+      expect(cancelButtons.length).toBeGreaterThanOrEqual(1);
     });
 
     it('calls onSaveConfig when Save Config is clicked', async () => {
@@ -364,7 +366,11 @@ describe('JobExpandedDetails', () => {
       const onCancelEdit = vi.fn();
       const job = createJob({ status: 'pending' });
       await renderDetails({ job, editing: true, onCancelEdit });
-      fireEvent.click(screen.getByText('Cancel'));
+      // Scope Cancel click to the config section — there's also a Cancel button
+      // in the Actions section (Start + Cancel for pending jobs)
+      const saveConfigBtn = screen.getByText('Save Config');
+      const configActions = saveConfigBtn.closest('.job-detail-actions') as HTMLElement;
+      fireEvent.click(within(configActions).getByText('Cancel'));
       expect(onCancelEdit).toHaveBeenCalledOnce();
     });
 

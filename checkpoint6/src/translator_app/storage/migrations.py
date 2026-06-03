@@ -11,7 +11,7 @@ from typing import Optional
 from translator_app.storage.db import DatabaseService
 
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 12
 
 # Migration registry: version -> list of SQL statements
 _MIGRATIONS: dict[int, list[str]] = {
@@ -52,6 +52,166 @@ _MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_trace_events_job_id ON trace_events(job_id)",
         "CREATE INDEX IF NOT EXISTS idx_trace_units_job_id ON trace_units(job_id)",
+    ],
+    5: [
+        # Phase 5: protection snapshots table
+        """CREATE TABLE IF NOT EXISTS protection_snapshots (
+            snapshot_hash TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            strategy_name TEXT NOT NULL,
+            profile_id TEXT,
+            schema_hash TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_protection_snapshots_job_id ON protection_snapshots(job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_protection_snapshots_schema_hash ON protection_snapshots(schema_hash)",
+    ],
+    6: [
+        # Phase 6E: persisted divergence for migration readiness metrics
+        """CREATE TABLE IF NOT EXISTS analysis_divergence (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            output_file_id TEXT NOT NULL,
+            divergence_type TEXT NOT NULL,
+            legacy_status TEXT,
+            snapshot_status TEXT,
+            legacy_failed INTEGER NOT NULL DEFAULT 0,
+            snapshot_failed INTEGER,
+            legacy_issue_codes TEXT NOT NULL DEFAULT '[]',
+            snapshot_issue_codes TEXT NOT NULL DEFAULT '[]',
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_divergence_job_file ON analysis_divergence(job_id, output_file_id)",
+        "CREATE INDEX IF NOT EXISTS idx_analysis_divergence_job_id ON analysis_divergence(job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_analysis_divergence_output_file_id ON analysis_divergence(output_file_id)",
+        "CREATE INDEX IF NOT EXISTS idx_analysis_divergence_type ON analysis_divergence(divergence_type)",
+    ],
+    7: [
+        # Phase 7: protection rule sets (replaces legacy strategies)
+        """CREATE TABLE IF NOT EXISTS protection_rule_sets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            builtin INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS protection_rule_set_rules (
+            id TEXT PRIMARY KEY,
+            rule_set_id TEXT NOT NULL REFERENCES protection_rule_sets(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            token_type TEXT NOT NULL DEFAULT 'game_token',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 100,
+            flags TEXT DEFAULT '[]',
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_protection_rule_set_rules_set_id ON protection_rule_set_rules(rule_set_id)",
+    ],
+    8: [
+        # Phase 8: explicit rule_kind for semantic separation
+        # protection_rule_set_rules
+        "ALTER TABLE protection_rule_set_rules ADD COLUMN rule_kind TEXT NOT NULL DEFAULT 'atomic'",
+        # custom_protection_rules
+        "ALTER TABLE custom_protection_rules ADD COLUMN rule_kind TEXT NOT NULL DEFAULT 'atomic'",
+        "ALTER TABLE custom_protection_rules ADD COLUMN token_type TEXT NOT NULL DEFAULT 'custom_token'",
+        "ALTER TABLE custom_protection_rules ADD COLUMN opener_pattern TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE custom_protection_rules ADD COLUMN closer_pattern TEXT NOT NULL DEFAULT ''",
+    ],
+    9: [
+        # Phase 9: persisted semantic ranking for learned protection candidates
+        "ALTER TABLE learned_protection_candidates ADD COLUMN semantic_rank INTEGER NOT NULL DEFAULT 10",
+        "ALTER TABLE learned_protection_candidates ADD COLUMN is_markup_fragment INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE learned_protection_candidates ADD COLUMN shadowed_by_paired_candidate TEXT",
+    ],
+    10: [
+        # Phase 10: opener_pattern/closer_pattern for rule-set rules
+        "ALTER TABLE protection_rule_set_rules ADD COLUMN opener_pattern TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE protection_rule_set_rules ADD COLUMN closer_pattern TEXT NOT NULL DEFAULT ''",
+    ],
+    11: [
+        # Phase 11: sync builtin rules from source (defensive ALTER TABLE
+        # in case v8/v10 were skipped for existing databases) + delete
+        # stale ``builtin_color_section`` rule that was removed from
+        # ``builtin_rules.py`` but persisted in some databases.
+        "ALTER TABLE protection_rule_set_rules ADD COLUMN rule_kind TEXT NOT NULL DEFAULT 'atomic'",
+        "DELETE FROM protection_rule_set_rules WHERE id = 'builtin_color_section'",
+    ],
+    12: [
+        # Phase 12: Pairing Project workspace tables
+        """CREATE TABLE IF NOT EXISTS pairing_projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            root_path TEXT NOT NULL,
+            source_language TEXT,
+            target_language TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_scanned_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'archived')),
+            notes TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS pairing_project_files (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES pairing_projects(id) ON DELETE CASCADE,
+            relative_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            extension TEXT NOT NULL DEFAULT '',
+            parent_dir TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT,
+            modified_at TEXT,
+            detected_language TEXT,
+            detected_role TEXT NOT NULL DEFAULT 'unknown'
+                CHECK (detected_role IN ('source', 'translated', 'unknown')),
+            group_key TEXT,
+            is_ignored INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS pairing_project_pairs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES pairing_projects(id) ON DELETE CASCADE,
+            source_file_id TEXT REFERENCES pairing_project_files(id) ON DELETE SET NULL,
+            translated_file_id TEXT REFERENCES pairing_project_files(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'suggested'
+                CHECK (status IN ('suggested', 'accepted', 'rejected', 'manual', 'ignored')),
+            confidence REAL NOT NULL DEFAULT 0.0,
+            reason TEXT,
+            created_by TEXT NOT NULL DEFAULT 'auto'
+                CHECK (created_by IN ('auto', 'user')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            notes TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS pairing_project_alignments (
+            id TEXT PRIMARY KEY,
+            pair_id TEXT NOT NULL REFERENCES pairing_project_pairs(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL DEFAULT 'raw'
+                CHECK (mode IN ('raw', 'structured')),
+            source_revision_hash TEXT,
+            translated_revision_hash TEXT,
+            operations_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_files_project ON pairing_project_files(project_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_files_project_path ON pairing_project_files(project_id, relative_path)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_files_hash ON pairing_project_files(project_id, content_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_files_group ON pairing_project_files(project_id, group_key)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_project ON pairing_project_pairs(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_status ON pairing_project_pairs(project_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_source ON pairing_project_pairs(project_id, source_file_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_translated ON pairing_project_pairs(project_id, translated_file_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pairing_alignments_pair ON pairing_project_alignments(pair_id)",
     ],
 }
 

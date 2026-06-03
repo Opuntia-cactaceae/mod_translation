@@ -25,6 +25,7 @@ from translator_benchmark.config.schema import RuntimeConfig as BenchmarkRuntime
 
 from translator_app.translation.config import TranslationConfig
 from translator_app.translation.trace_models import TraceEventSeverity, TraceEventType
+from translator_app.languages import resolve_display_name as resolve_language_name
 
 logger = logging.getLogger(__name__)
 
@@ -56,52 +57,6 @@ _CHATBOT_REPLY_PATTERNS = [
     "can't process your request",
     "i'll do my best to help",
 ]
-
-# Language code → human-readable name mapping
-_LANGUAGE_NAMES: Dict[str, str] = {
-    "en": "English",
-    "ru": "Russian",
-    "zh": "Chinese",
-    "de": "German",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "pt": "Portuguese",
-    "pl": "Polish",
-    "nl": "Dutch",
-    "sv": "Swedish",
-    "da": "Danish",
-    "fi": "Finnish",
-    "cs": "Czech",
-    "hu": "Hungarian",
-    "ro": "Romanian",
-    "uk": "Ukrainian",
-    "el": "Greek",
-    "tr": "Turkish",
-    "ar": "Arabic",
-    "he": "Hebrew",
-    "th": "Thai",
-    "vi": "Vietnamese",
-    "id": "Indonesian",
-    "ms": "Malay",
-    "hi": "Hindi",
-}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def resolve_language_name(code: str) -> str:
-    """Return the human-readable name for a language code.
-
-    Falls back to the code itself if unknown.
-    Example: ``"en"`` → ``"English"``, ``"ru"`` → ``"Russian"``.
-    """
-    return _LANGUAGE_NAMES.get(code, code)
 
 
 def _preview_text(text: str, max_chars: int = 1000) -> str:

@@ -44,6 +44,7 @@ export interface JobConfigFormModel {
   batch_size: string;
   prompt_profile: string;
   protection_strategy: string;
+  rule_set_ids: string;
   validator: string;
 }
 
@@ -52,5 +53,6 @@ export const CONFIG_FORM_FIELDS: (keyof JobConfigFormModel)[] = [
   'batch_size',
   'prompt_profile',
   'protection_strategy',
+  'rule_set_ids',
   'validator',
 ];

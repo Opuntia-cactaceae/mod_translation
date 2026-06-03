@@ -15,7 +15,7 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from translator_app.storage.db import DatabaseService
@@ -69,8 +69,9 @@ class JobRepository:
                 cached_units, current_batch_index, total_batches,
                 config, task_plan, diagnostics, result_summary,
                 output_files, output_root_dir,
-                error_message, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                error_message, created_at, updated_at,
+                started_at, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["id"],
                 data["name"],
@@ -94,6 +95,8 @@ class JobRepository:
                 data["error_message"],
                 data["created_at"],
                 data["updated_at"],
+                data.get("started_at"),
+                data.get("completed_at"),
             ),
         )
             conn.commit()
@@ -213,6 +216,8 @@ class JobRepository:
             "output_root_dir": output_root_dir,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "started_at": row["started_at"] if "started_at" in row.keys() else None,
+            "completed_at": row["completed_at"] if "completed_at" in row.keys() else None,
             "error_message": row["error_message"],
         }
         job = _dict_to_job(data)
@@ -1186,7 +1191,7 @@ class TraceRepository:
             model=row["model"] or "",
             src_lang=row["src_lang"] or "",
             dst_lang=row["dst_lang"] or "",
-            timestamp=_parse_timestamp(row["timestamp"]) if row["timestamp"] else datetime.utcnow(),
+            timestamp=_parse_timestamp(row["timestamp"]) if row["timestamp"] else datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
     @staticmethod
@@ -1210,7 +1215,7 @@ class TraceRepository:
             status=status,
             error_message=row["error_message"] or "",
             batch_index=row["batch_index"] or 0,
-            updated_at=_parse_timestamp(row["updated_at"]) if row["updated_at"] else datetime.utcnow(),
+            updated_at=_parse_timestamp(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
 
@@ -1219,4 +1224,4 @@ def _parse_timestamp(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value)
     except (ValueError, TypeError):
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)

@@ -1,14 +1,21 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useEffect, useState, useMemo, useRef } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useUnsavedChangesWarning } from '../hooks/useUnsavedChangesWarning';
 import { api, ApiError, useToast } from '../App';
 import AutoResizeTextarea from '../components/common/AutoResizeTextarea';
-import type { OutputFileEditorPayload, OutputEditorEntry, OutputEditorMetadata, OutputAnalysisResult, OutputAnalysisDiagnostic, FileContentsResponse } from '../api/types';
+import FreshnessBadge from '../components/common/FreshnessBadge';
+import ResultBadge from '../components/common/ResultBadge';
+import type {
+  EditorSessionState,
+  EditorSessionEntry,
+  OutputAnalysisResult,
+  FileContentsResponse,
+} from '../api/types';
 
 type SeverityFilter = 'all' | 'error' | 'warning' | 'info';
 
 /* ── Helper: check if a row should be shown as non-editable ── */
-function isNonEditable(entry: OutputEditorEntry): boolean {
+function isNonEditable(entry: EditorSessionEntry): boolean {
   return !entry.translatable || entry.entry_type === 'raw_unknown';
 }
 
@@ -48,25 +55,33 @@ function CodeViewerPanel({ title, content, path, exists, missingLabel }: {
 export default function OutputFileEditor() {
   const { outputFileId } = useParams<{ outputFileId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
 
-  const [payload, setPayload] = useState<OutputFileEditorPayload | null>(null);
+  // Extract jobId from navigation state (set by OutputFileActions when opening editor)
+  const editorNavState = location.state as { jobId?: string } | null;
+  const jobId = editorNavState?.jobId;
+
+  // ── Session state (single source of truth) ──
+  const [session, setSession] = useState<EditorSessionState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [translatedContent, setTranslatedContent] = useState('');
-  const [savedContent, setSavedContent] = useState('');
-  const [saving, setSaving] = useState(false);
+  // ── Save / sync state ──
+  const [savingEntryKeys, setSavingEntryKeys] = useState<Set<string>>(new Set());
+  const [savingToDisk, setSavingToDisk] = useState(false);
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  const [modified, setModified] = useState(false);
+  // ── Raw text draft (only used in raw text mode) ──
+  const [rawTextDraft, setRawTextDraft] = useState<string>('');
+  const [rawTextDirty, setRawTextDirty] = useState(false);
 
-  // Analysis state
+  // ── Analysis state ──
   const [analysisResult, setAnalysisResult] = useState<OutputAnalysisResult | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  // Diagnostics UX state
+  // ── Diagnostics UX state ──
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [showAffectedRows, setShowAffectedRows] = useState(false);
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
@@ -80,7 +95,25 @@ export default function OutputFileEditor() {
   const [fileContentsLoading, setFileContentsLoading] = useState(false);
   const [fileContentsError, setFileContentsError] = useState<string | null>(null);
 
-  // ── Derived data ──────────────────────────────────────────────
+  // ── Blur debounce refs ──
+  const entryBlurTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Track the last backend-synced translated_text for each entry key.
+  // This is distinct from the session state, which includes optimistic local
+  // updates.  Used to skip spurious blur events (e.g. layout-reflow focus
+  // changes) that would otherwise trigger a costly backend rebuild cycle.
+  const syncedTranslations = useRef<Record<string, string | null>>({});
+
+  // ── Editor scroll container ref (for jump-to-line scrolling) ──
+  const editorScrollRef = useRef<HTMLDivElement>(null);
+
+  // ── Derive back-navigation target from incoming state ──
+  function goBackToTranslatedFiles() {
+    navigate('/translated-files', jobId ? { state: { restoreJobId: jobId } } : undefined);
+  }
+
+  const isRawTextMode = session ? !session.structured : false;
+  // Modified = session says dirty, OR raw text has unsynced local edits
+  const modified = session ? session.dirty || rawTextDirty : false;
 
   /** Map source_line -> severity for inline row highlighting. */
   const lineDiagnosticMap = useMemo(() => {
@@ -113,41 +146,45 @@ export default function OutputFileEditor() {
 
   /** Filtered entries in structured mode. */
   const filteredEntries = useMemo(() => {
-    if (!payload || !payload.structured) return payload?.entries || [];
-    if (!showAffectedRows || !analysisResult) return payload.entries;
-    // Build set of affected source line numbers
+    if (!session || !session.structured) return session?.entries || [];
+    if (!showAffectedRows || !analysisResult) return session.entries;
     const affectedLines = new Set<number>();
     for (const d of analysisResult.diagnostics) {
       if (d.line != null) affectedLines.add(d.line);
     }
-    return payload.entries.filter(e => affectedLines.has(e.source_line));
-  }, [payload, showAffectedRows, analysisResult]);
+    return session.entries.filter(e => affectedLines.has(e.source_line));
+  }, [session, showAffectedRows, analysisResult]);
 
-  // ── Load payload ──────────────────────────────────────────────
+  // ── Load session on mount ─────────────────────────────────────
   useEffect(() => {
     if (!outputFileId) return;
-    loadPayload(outputFileId);
+    loadSession(outputFileId);
   }, [outputFileId]);
 
-  async function loadPayload(id: string) {
+  async function loadSession(id: string) {
     setLoading(true);
     setError(null);
-    setPayload(null);
+    setSession(null);
     setAnalysisResult(null);
+    setSaveResult(null);
     setHighlightedLine(null);
     setFileContents(null);
     setFileContentsError(null);
+    setRawTextDraft('');
+    setRawTextDirty(false);
     try {
-      const data = await api.getOutputEditorPayload(id);
-      setPayload(data);
-      setTranslatedContent(data.translated_content);
-      setSavedContent(data.translated_content);
-      setModified(false);
-      // Also check if we have a latest analysis
+      const data = await api.openEditorSession(id);
+      setSession(data);
+      setRawTextDraft(data.translated_text);
+      // Initialize synced translations from the backend response
+      syncedTranslations.current = {};
+      for (const e of data.entries) {
+        syncedTranslations.current[e.key] = e.translated_text;
+      }
       loadLatestAnalysis(id);
     } catch (err) {
       if (err instanceof ApiError) setError(err.message);
-      else setError('Failed to load editor payload');
+      else setError('Failed to load editor session');
     } finally {
       setLoading(false);
     }
@@ -169,7 +206,6 @@ export default function OutputFileEditor() {
     const newCollapsed = !fileViewerCollapsed;
     setFileViewerCollapsed(newCollapsed);
 
-    // Load contents on first expand
     if (!newCollapsed && !fileContents && outputFileId) {
       setFileContentsLoading(true);
       setFileContentsError(null);
@@ -214,24 +250,44 @@ export default function OutputFileEditor() {
   // ── Navigate to line/entry from diagnostic ────────────────────
   function scrollToLine(line: number | null) {
     if (line == null) return;
-    // Try to find a row with matching line number in structured view
-    const rows = document.querySelectorAll('[data-entry-line]');
+    const container = editorScrollRef.current;
+    if (!container) return;
+
+    // Scope the query to the editor container so we don't scroll the page
+    const rows = container.querySelectorAll('[data-entry-line]');
     for (const row of rows) {
       if (Number(row.getAttribute('data-entry-line')) === line) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Highlight the row briefly
+        const rowEl = row as HTMLElement;
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        const relativeTop = rowRect.top - containerRect.top;
+
+        // Only scroll if the row is not already fully visible
+        const scrollNeeded =
+          relativeTop < 0 ||
+          relativeTop + rowEl.offsetHeight > container.clientHeight;
+
+        if (scrollNeeded) {
+          const targetScroll =
+            container.scrollTop +
+            relativeTop -
+            container.clientHeight / 2 +
+            rowEl.offsetHeight / 2;
+          container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+        }
+
         setHighlightedLine(line);
         setTimeout(() => setHighlightedLine(null), 1500);
-        // Focus the translated input in this row
         const input = row.querySelector('input, textarea') as HTMLElement | null;
         if (input) input.focus();
         return;
       }
     }
     // Fallback: scroll textarea to approximate position
-    const textareas = document.querySelectorAll('textarea');
+    const textareas = container.querySelectorAll('textarea');
     if (textareas.length > 0) {
-      const lines = translatedContent.split('\n');
+      const text = isRawTextMode ? rawTextDraft : (session?.translated_text || '');
+      const lines = text.split('\n');
       let charPos = 0;
       for (let i = 0; i < Math.min(line - 1, lines.length); i++) {
         charPos += lines[i].length + 1;
@@ -240,36 +296,159 @@ export default function OutputFileEditor() {
     }
   }
 
-  // Track modified state
-  useEffect(() => {
-    setModified(translatedContent !== savedContent);
-  }, [translatedContent, savedContent]);
-
-  // ── Navigation guard (compatible with BrowserRouter) ─────────
+  // ── Navigation guard ─────────────────────────────────────────
   const { confirmNavigation } = useUnsavedChangesWarning({ dirty: modified });
 
-  // ── Save ──────────────────────────────────────────────────────
-  async function handleSave() {
-    if (!payload || !outputFileId) return;
-    setSaving(true);
+  // ── Entry update (table mode: on blur) ────────────────────────
+  async function handleEntryBlur(entryKey: string, value: string) {
+    if (!outputFileId) return;
+
+    // ── Skip save if the text hasn't actually changed since last sync ──
+    // Prevents spurious blur events (e.g. caused by layout reflow or
+    // textarea height recalculation) from triggering a backend rebuild
+    // cycle that can corrupt null/unparseable entries.
+    const synced = syncedTranslations.current[entryKey];
+    if (synced !== undefined && (synced ?? '') === value) {
+      return;
+    }
+
+    // Clear any pending debounce for this entry
+    const timer = entryBlurTimers.current.get(entryKey);
+    if (timer) clearTimeout(timer);
+    entryBlurTimers.current.delete(entryKey);
+
+    setSavingEntryKeys(prev => {
+      const next = new Set(prev);
+      next.add(entryKey);
+      return next;
+    });
+
+    try {
+      const res = await api.updateSessionEntry(outputFileId, entryKey, { translated_text: value });
+      // Update synced translations from the canonical backend response
+      for (const e of res.entries) {
+        syncedTranslations.current[e.key] = e.translated_text;
+      }
+      setSession(prev => prev ? {
+        ...prev,
+        translated_text: res.translated_text,
+        entries: res.entries,
+        revision: res.revision,
+        dirty: res.dirty,
+      } : prev);
+    } catch (err) {
+      // On failure, re-fetch canonical state from backend
+      toast.showToast('Entry update failed — reverting', 'error');
+      try {
+        const fresh = await api.getEditorSession(outputFileId);
+        // Update synced translations from the fresh backend state
+        syncedTranslations.current = {};
+        for (const e of fresh.entries) {
+          syncedTranslations.current[e.key] = e.translated_text;
+        }
+        setSession(fresh);
+      } catch {
+        // Session fetch also failed — mark critical error
+        setError('Session error after failed entry update');
+      }
+    } finally {
+      setSavingEntryKeys(prev => {
+        const next = new Set(prev);
+        next.delete(entryKey);
+        return next;
+      });
+    }
+  }
+
+  // ── Entry change (table mode: optimistic local update) ────────
+  function handleEntryChange(entryKey: string, idx: number, value: string) {
+    if (!session) return;
+
+    // Optimistic local update
+    const newEntries = session.entries.map((e, i) =>
+      i === idx ? { ...e, translated_text: value } : e,
+    );
+    setSession({ ...session, entries: newEntries, dirty: true });
+
+    // Debounce blur save: reset timer on each keystroke
+    const existing = entryBlurTimers.current.get(entryKey);
+    if (existing) clearTimeout(existing);
+  }
+
+  // ── Raw text change (local draft only) ────────────────────────
+  function handleRawTextChange(value: string) {
+    setRawTextDraft(value);
+    setRawTextDirty(true);
+  }
+
+  // ── Raw text Save (send to backend, reparse) ──────────────────
+  async function handleRawTextSave() {
+    if (!outputFileId) return;
+    setSavingToDisk(true);
     setSaveResult(null);
     try {
-      const res = await api.saveOutputTranslatedContent(outputFileId, {
-        translated_content: translatedContent,
-        expected_updated_at: payload.metadata.updated_at || undefined,
-      });
-      setSaveResult({ success: true, message: 'Saved successfully' });
-      toast.showToast('Translated content saved');
-      setSavedContent(translatedContent);
-      setModified(false);
-      // Update stored updated_at
-      setPayload(prev => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          metadata: { ...prev.metadata, updated_at: res.updated_at, translated_size_bytes: res.translated_size_bytes },
-        };
-      });
+      const res = await api.updateEditorRawText(outputFileId, { translated_text: rawTextDraft });
+      setSession(prev => prev ? {
+        ...prev,
+        translated_text: res.translated_text,
+        entries: res.entries,
+        revision: res.revision,
+        dirty: res.dirty,
+        structured: res.structured,
+      } : prev);
+      setRawTextDraft(res.translated_text);
+      setRawTextDirty(false);
+      if (res.parse_error) {
+        toast.showToast(`Parsed with warnings: ${res.parse_error}`, 'error');
+      } else {
+        toast.showToast('Raw text saved to session');
+      }
+      // Clear analysis since content changed
+      setAnalysisResult(null);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast.showToast(err.message, 'error');
+      } else {
+        toast.showToast('Raw text save failed', 'error');
+      }
+    } finally {
+      setSavingToDisk(false);
+    }
+  }
+
+  // ── Raw text Cancel (restore from session) ────────────────────
+  function handleRawTextCancel() {
+    if (session) {
+      setRawTextDraft(session.translated_text);
+      setRawTextDirty(false);
+    }
+  }
+
+  // ── Save to disk ──────────────────────────────────────────────
+  async function handleSaveToDisk() {
+    if (!outputFileId) return;
+
+    // If in raw text mode with unsaved edits, save to session first
+    if (isRawTextMode && rawTextDirty) {
+      await handleRawTextSave();
+    }
+
+    setSavingToDisk(true);
+    setSaveResult(null);
+    try {
+      const res = await api.saveEditorSessionToDisk(outputFileId);
+      setSession(prev => prev ? {
+        ...prev,
+        metadata: {
+          ...prev.metadata,
+          updated_at: res.updated_at,
+          translated_size_bytes: res.translated_size_bytes,
+        },
+        dirty: false,
+        revision: res.revision,
+      } : prev);
+      setSaveResult({ success: true, message: 'Saved to disk' });
+      toast.showToast('File saved to disk');
       // Clear analysis since content changed
       setAnalysisResult(null);
     } catch (err) {
@@ -277,30 +456,30 @@ export default function OutputFileEditor() {
         setSaveResult({ success: false, message: err.message });
         toast.showToast(err.message, 'error');
       } else {
-        setSaveResult({ success: false, message: 'Save failed' });
-        toast.showToast('Save failed', 'error');
+        setSaveResult({ success: false, message: 'Save to disk failed' });
+        toast.showToast('Save to disk failed', 'error');
       }
     } finally {
-      setSaving(false);
+      setSavingToDisk(false);
     }
   }
 
-  // ── Reload ────────────────────────────────────────────────────
-  function handleReload() {
+  // ── Reload / Revert ────────────────────────────────────────────
+  function handleRevert() {
     if (modified) {
       const ok = window.confirm('Discard changes and reload?');
       if (!ok) return;
     }
-    if (outputFileId) loadPayload(outputFileId);
+    if (outputFileId) loadSession(outputFileId);
   }
 
   // ── Helpers ───────────────────────────────────────────────────
 
-  function getRowSeverity(entry: OutputEditorEntry): string | null {
+  function getRowSeverity(entry: EditorSessionEntry): string | null {
     return lineDiagnosticMap.get(entry.source_line) || null;
   }
 
-  function getRowStyle(entry: OutputEditorEntry): React.CSSProperties {
+  function getRowStyle(entry: EditorSessionEntry): React.CSSProperties {
     const severity = getRowSeverity(entry);
     const isHighlighted = highlightedLine === entry.source_line;
     const base: React.CSSProperties = {};
@@ -326,6 +505,10 @@ export default function OutputFileEditor() {
     return `diag-filter-btn${severityFilter === level ? ' active' : ''}`;
   }
 
+  function isEntrySaving(entryKey: string): boolean {
+    return savingEntryKeys.has(entryKey);
+  }
+
   // ── Render ────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -345,30 +528,33 @@ export default function OutputFileEditor() {
           <h1>Output File Editor</h1>
         </div>
         <div className="alert alert-error">{error}</div>
-        <button className="btn" onClick={() => navigate('/translated-files')}>Back to Translated Files</button>
+        <button className="btn" onClick={goBackToTranslatedFiles}>Back to Translated Files</button>
       </div>
     );
   }
 
-  if (!payload) {
+  if (!session) {
     return (
       <div>
         <div className="page-header">
           <h1>Output File Editor</h1>
         </div>
         <div className="alert alert-error">No editor data available.</div>
-        <button className="btn" onClick={() => navigate('/translated-files')}>Back to Translated Files</button>
+        <button className="btn" onClick={goBackToTranslatedFiles}>Back to Translated Files</button>
       </div>
     );
   }
 
-  const meta = payload.metadata;
-  const missingSource = !payload.source_file.exists;
-  const missingTranslated = !payload.translated_file.exists;
+  const meta = session.metadata;
+  const missingSource = !session.source_file.exists;
+  const missingTranslated = !session.translated_file.exists;
 
-  // -- Stale analysis warning --
-  const isOutdated = payload.metadata.latest_analysis_state === 'outdated';
-  const showStaleWarning = (payload.metadata.analysis_stale || isOutdated) && analysisResult;
+  // Stale analysis warning
+  const isOutdated = meta.latest_analysis_state === 'outdated';
+  const showStaleWarning = (meta.analysis_stale || isOutdated) && analysisResult;
+
+  // Freshness state for display
+  const freshnessState = meta.latest_analysis_state || undefined;
 
   return (
     <div>
@@ -376,28 +562,28 @@ export default function OutputFileEditor() {
         <div>
           <h1>Output File Editor</h1>
           <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-            {meta.file_name} &middot; ID: {payload.output_file_id.slice(0, 16)}
-            {payload.structured ? ' \u00b7 Structured' : ' \u00b7 Raw text'}
+            {meta.file_name} &middot; ID: {session.output_file_id.slice(0, 16)}
+            {session.structured ? ' \u00b7 Structured' : ' \u00b7 Raw text'}
             {modified && <span style={{ color: 'var(--color-warning)', marginLeft: '0.5rem' }}>(modified)</span>}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <button className="btn btn-sm" onClick={() => confirmNavigation(() => navigate('/translated-files'))}>Back</button>
-          <button className="btn btn-sm" onClick={handleReload} disabled={loading}>Reload</button>
+          <button className="btn btn-sm" onClick={() => confirmNavigation(goBackToTranslatedFiles)}>Back</button>
+          <button className="btn btn-sm" onClick={handleRevert} disabled={loading}>Revert</button>
           <button className="btn btn-sm" onClick={handleAnalyze} disabled={analysisLoading}>
             {analysisLoading ? 'Analyzing...' : 'Analyze'}
           </button>
-          <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={saving || !modified}>
-            {saving ? 'Saving...' : 'Save'}
+          <button className="btn btn-sm btn-primary" onClick={handleSaveToDisk} disabled={savingToDisk || !modified}>
+            {savingToDisk ? 'Saving...' : 'Save to Disk'}
           </button>
         </div>
       </div>
 
       {missingSource && (
-        <div className="alert alert-warning">Source file does not exist: {payload.source_file.relative_path || payload.source_file.path}</div>
+        <div className="alert alert-warning">Source file does not exist: {session.source_file.relative_path || session.source_file.path}</div>
       )}
       {missingTranslated && (
-        <div className="alert alert-warning">Translated file does not exist: {payload.translated_file.relative_path || payload.translated_file.path}</div>
+        <div className="alert alert-warning">Translated file does not exist: {session.translated_file.relative_path || session.translated_file.path}</div>
       )}
 
       {saveResult && (
@@ -434,12 +620,12 @@ export default function OutputFileEditor() {
           }}>
             <span>
               Diagnostics ({analysisResult.diagnostics.length})
-              <span className={`badge ${
-                analysisResult.status === 'passed' ? 'badge-success' :
-                analysisResult.status === 'warning' ? 'badge-warning' :
-                analysisResult.status === 'failed' ? 'badge-error' : 'badge-muted'
-              }`} style={{ marginLeft: '0.5rem' }}>
-                {analysisResult.status}
+              <span style={{ marginLeft: '0.5rem' }}>
+                <ResultBadge
+                  status={analysisResult.status}
+                  errorsCount={analysisResult.errors_count}
+                  warningsCount={analysisResult.warnings_count}
+                />
               </span>
             </span>
             <span style={{ fontSize: '0.65rem', color: 'var(--color-text-muted)' }}>
@@ -464,7 +650,7 @@ export default function OutputFileEditor() {
             <button className={getSeverityFilterBtnClass('info')} onClick={() => setSeverityFilter('info')}>
               Info ({severityCounts.info})
             </button>
-            {payload.structured && (
+            {session.structured && (
               <label className="diag-toggle-label">
                 <input type="checkbox" checked={showAffectedRows} onChange={e => setShowAffectedRows(e.target.checked)} />
                 Affected only
@@ -474,6 +660,15 @@ export default function OutputFileEditor() {
 
           {/* Diagnostic items */}
           <div className="custom-scrollbar" style={{ overflowY: 'auto', flex: 1, padding: '0.25rem 0' }}>
+            {analysisResult.diagnostics.some(
+              d => d.code === 'SNAPSHOT_UNAVAILABLE' && d.severity === 'error'
+            ) && (
+              <div className="alert alert-warning" style={{ fontSize: '0.75rem', margin: '0.25rem 0.5rem', padding: '0.4rem 0.6rem' }}>
+                <strong>Authoritative analysis unavailable.</strong>{' '}
+                Snapshot-based checks could not be performed.
+                Supplementary findings below are non-authoritative.
+              </div>
+            )}
             {filteredDiagnostics.length === 0 && (
               <div style={{ padding: '0.75rem 0.75rem', color: 'var(--color-text-muted)', fontStyle: 'italic', fontSize: '0.75rem', textAlign: 'center' }}>
                 No {severityFilter === 'all' ? '' : severityFilter} diagnostics.
@@ -501,6 +696,7 @@ export default function OutputFileEditor() {
                       <div className="diagnostic-meta">
                         {d.key && <span className="diagnostic-meta-chip">key: {d.key}</span>}
                         {d.line != null && <span className="diagnostic-meta-chip">line: {d.line}</span>}
+                        {d.details?.reason != null && typeof d.details.reason === 'string' && <span className="diagnostic-meta-chip">reason: {d.details.reason as string}</span>}
                         {d.source && <span className="diagnostic-meta-chip">{d.source}</span>}
                       </div>
                     </div>
@@ -524,9 +720,9 @@ export default function OutputFileEditor() {
           <span className={`collapsible-arrow${editorCollapsed ? '' : ' open'}`}>{'\u25B6'}</span>
           <span style={{ flex: 1 }}>
             {missingTranslated ? 'Translated (new file)' : 'Side-by-Side Editor'}
-            {payload.structured && showAffectedRows && analysisResult && (
+            {session.structured && showAffectedRows && analysisResult && (
               <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-                ({filteredEntries.length} / {payload.entries.length} rows)
+                ({filteredEntries.length} / {session.entries.length} rows)
               </span>
             )}
           </span>
@@ -534,7 +730,8 @@ export default function OutputFileEditor() {
 
         {!editorCollapsed && (
           <div className="collapsible-body" style={{ padding: 0 }}>
-            {payload.structured && payload.entries.length > 0 ? (
+            <div ref={editorScrollRef} className="editor-scroll-container">
+            {session.structured && session.entries.length > 0 ? (
               /* ── Structured mode: entries table ── */
               <div className="table-wrapper">
                 <table className="side-by-side-editor-table">
@@ -554,6 +751,7 @@ export default function OutputFileEditor() {
                       const marker = getSeverityMarker(severity);
                       const rowStyle = getRowStyle(entry);
                       const nonEditable = isNonEditable(entry);
+                      const saving = isEntrySaving(entry.key);
                       return (
                         <tr
                           key={entry.key || idx}
@@ -562,7 +760,7 @@ export default function OutputFileEditor() {
                           className={nonEditable ? 'row-non-editable' : ''}
                         >
                           <td style={{ fontSize: '0.7rem', textAlign: 'center', color: severity === 'error' ? 'var(--color-error, #e74c3c)' : severity === 'warning' ? 'var(--color-warning, #f39c12)' : 'transparent' }}>
-                            {marker || '\u2014'}
+                            {saving ? '\u231B' : (marker || '\u2014')}
                           </td>
                           <td className="mono" style={{ fontSize: '0.7rem' }}>{idx + 1}</td>
                           <td className="mono" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.75rem' }} title={entry.key || 'No key'}>
@@ -576,6 +774,27 @@ export default function OutputFileEditor() {
                               <div className="editor-readonly-placeholder">
                                 {entry.entry_type === 'raw_unknown' ? 'Raw line' : 'Not translatable'}
                               </div>
+                            ) : entry.translated_text === null ? (
+                              <div className="editor-missing-translation">
+                                <AutoResizeTextarea
+                                  className="form-control form-control-missing"
+                                  placeholder="No translation"
+                                  style={{
+                                    width: '100%',
+                                    fontSize: '0.8rem',
+                                    minHeight: '1.8rem',
+                                    resize: 'vertical',
+                                    overflow: 'hidden',
+                                    lineHeight: '1.3',
+                                    color: 'var(--color-text-muted)',
+                                    fontStyle: 'italic',
+                                  }}
+                                  value={''}
+                                  onChange={e => handleEntryChange(entry.key, idx, e.target.value)}
+                                  onBlur={e => handleEntryBlur(entry.key, e.target.value)}
+                                  rows={1}
+                                />
+                              </div>
                             ) : (
                               <AutoResizeTextarea
                                 className="form-control"
@@ -588,16 +807,8 @@ export default function OutputFileEditor() {
                                   lineHeight: '1.3',
                                 }}
                                 value={entry.translated_text ?? ''}
-                                onChange={e => {
-                                  const newEntries = payload.entries.map((e2, i2) =>
-                                    i2 === idx ? { ...e2, translated_text: e.target.value } : e2,
-                                  );
-                                  setPayload({ ...payload, entries: newEntries });
-                                  const newContent = newEntries
-                                    .map(e3 => e3.translated_text ?? '')
-                                    .join('\n');
-                                  setTranslatedContent(newContent);
-                                }}
+                                onChange={e => handleEntryChange(entry.key, idx, e.target.value)}
+                                onBlur={e => handleEntryBlur(entry.key, e.target.value)}
                                 rows={1}
                               />
                             )}
@@ -633,24 +844,41 @@ export default function OutputFileEditor() {
                     <textarea
                       className="form-control"
                       style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.75rem', resize: 'none' }}
-                      value={payload.source_content}
+                      value={session.source_content}
                       readOnly
                     />
                   </div>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                     <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-muted)' }}>
-                      Translated {modified && <span style={{ color: 'var(--color-warning)' }}>(modified)</span>}
+                      Translated {rawTextDirty && <span style={{ color: 'var(--color-warning)' }}>(unsaved)</span>}
                     </div>
                     <textarea
                       className="form-control"
                       style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.75rem', resize: 'none' }}
-                      value={translatedContent}
-                      onChange={e => setTranslatedContent(e.target.value)}
+                      value={rawTextDraft}
+                      onChange={e => handleRawTextChange(e.target.value)}
                     />
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', justifyContent: 'flex-end' }}>
+                      <button
+                        className="btn btn-sm"
+                        onClick={handleRawTextCancel}
+                        disabled={!rawTextDirty}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={handleRawTextSave}
+                        disabled={savingToDisk || !rawTextDirty}
+                      >
+                        {savingToDisk ? 'Saving...' : 'Save Raw'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
+          </div>
           </div>
         )}
       </div>
@@ -709,13 +937,15 @@ export default function OutputFileEditor() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', fontSize: '0.8rem' }}>
           <div><strong>File:</strong> {meta.file_name}</div>
           <div><strong>Type:</strong> {meta.file_ext || '\u2014'}</div>
-          <div><strong>Status:</strong> {meta.status}</div>
+          <div><strong>Status:</strong> {meta.status}{freshnessState ? <span style={{ marginLeft: '0.25rem' }}><FreshnessBadge state={freshnessState} /></span> : null}</div>
           <div><strong>Source Size:</strong> {meta.source_size_bytes} B</div>
           <div><strong>Translated Size:</strong> {meta.translated_size_bytes} B</div>
           <div><strong>Updated:</strong> {meta.updated_at ? new Date(meta.updated_at).toLocaleString() : '\u2014'}</div>
+          <div><strong>Revision:</strong> {session.revision}</div>
+          <div><strong>Session:</strong> {session.dirty ? 'Modified' : 'Clean'}</div>
           {analysisResult && (
             <>
-              <div><strong>Analysis:</strong> {analysisResult.status}</div>
+              <div><strong>Analysis:</strong> <ResultBadge status={analysisResult.status} errorsCount={analysisResult.errors_count} warningsCount={analysisResult.warnings_count} /></div>
               <div><strong>Compilability:</strong> {analysisResult.compilability_score ?? '\u2014'}</div>
               <div><strong>Placeholders:</strong> {analysisResult.placeholders_score ?? '\u2014'}</div>
             </>

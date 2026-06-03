@@ -9,8 +9,6 @@ import type { ModInfoSchema } from '../../api/types';
 export interface UseCreateJobModsReturn {
   mods: ModInfoSchema[];
   modsLoading: boolean;
-  selectedMod: ModInfoSchema | null;
-  setSelectedMod: (mod: ModInfoSchema | null) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -18,14 +16,10 @@ export interface UseCreateJobModsReturn {
 /* ------------------------------------------------------------------ */
 
 /**
- * Load discovered mods on mount and manage mod selection state.
- *
- * Does NOT handle form-field population when a mod is selected —
- * that is a cross-cutting concern handled by the composition hook.
+ * Load discovered mods on mount.
  */
 export function useCreateJobMods(): UseCreateJobModsReturn {
   const [mods, setMods] = useState<ModInfoSchema[]>([]);
-  const [selectedMod, setSelectedMod] = useState<ModInfoSchema | null>(null);
   const [modsLoading, setModsLoading] = useState(false);
 
   useEffect(() => {
@@ -39,7 +33,5 @@ export function useCreateJobMods(): UseCreateJobModsReturn {
   return {
     mods,
     modsLoading,
-    selectedMod,
-    setSelectedMod,
   };
 }

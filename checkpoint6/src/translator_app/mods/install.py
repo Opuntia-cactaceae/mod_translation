@@ -88,6 +88,20 @@ class ModInstallService:
             )
 
         target_path = self._build_target_path(request.target_dir, request.source_path)
+
+        # ---- Noop check: source and target are the same directory ----
+        if self._paths_are_same(request.source_path, target_path):
+            return InstallPreview(
+                operation=request.mode,
+                target_path=target_path,
+                conflict=False,
+                action="noop",
+                estimated_files=0,
+                estimated_bytes=0,
+                warnings=["Source and target are the same directory; no action needed"],
+                errors=[],
+            )
+
         conflict = os.path.exists(target_path)
 
         # Estimate
@@ -142,6 +156,27 @@ class ModInstallService:
 
         # --- 3. Build target path ---
         target_path = self._build_target_path(request.target_dir, request.source_path)
+
+        # --- 3a. Noop check: source and target are the same directory ---
+        if self._paths_are_same(request.source_path, target_path):
+            duration_ms = int((time.monotonic() - start) * 1000)
+            return InstallResult(
+                success=True,
+                partial=False,
+                operation_type=request.mode,
+                source_path=request.source_path,
+                target_path=target_path,
+                final_path=target_path,
+                files_copied=0,
+                files_moved=0,
+                files_skipped=0,
+                bytes_processed=0,
+                duration_ms=duration_ms,
+                backup_path=None,
+                warnings=["Source and target are the same directory; no action needed"],
+                errors=[],
+            )
+
         final_path = target_path
         backup_path: Optional[str] = None
         conflict = os.path.exists(target_path)
@@ -256,6 +291,15 @@ class ModInstallService:
         if not os.access(target_dir, os.W_OK):
             return TARGET_NOT_WRITABLE
         return None
+
+    def _paths_are_same(self, path_a: str, path_b: str) -> bool:
+        """Return ``True`` if both paths resolve to the same filesystem location."""
+        try:
+            resolved_a = Path(path_a).resolve()
+            resolved_b = Path(path_b).resolve()
+            return str(resolved_a) == str(resolved_b)
+        except OSError:
+            return False
 
     def _build_target_path(self, target_dir: str, source_path: str) -> str:
         """Build the target path: target_dir / basename(source_path)."""

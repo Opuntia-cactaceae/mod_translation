@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from translator_app.outputs.debug_models import (
     AnalysisDebugInfo,
@@ -24,6 +24,12 @@ from translator_app.outputs.debug_models import (
 from translator_app.outputs.models import TranslatedOutputFile
 from translator_app.outputs.repository import TranslatedOutputFileRepository
 from translator_app.outputs.scan_event_repository import ScanEventRepository
+from translator_app.outputs.analysis.protection_metadata import (
+    ProtectionMetadataResolver,
+)
+
+if TYPE_CHECKING:
+    from translator_app.outputs.analysis.service import OutputAnalysisService
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +46,15 @@ class OutputDebugService:
         self,
         file_repository: TranslatedOutputFileRepository,
         scan_event_repo: ScanEventRepository,
+        protection_metadata_resolver: Optional[ProtectionMetadataResolver] = None,
+        analysis_service: Optional[OutputAnalysisService] = None,
+        profile_staleness_checker: Optional[Any] = None,
     ):
         self._file_repo = file_repository
         self._scan_event_repo = scan_event_repo
+        self._protection_metadata_resolver = protection_metadata_resolver
+        self._analysis_service = analysis_service
+        self._profile_staleness_checker = profile_staleness_checker
 
     # ------------------------------------------------------------------
     # Stale reason derivation
@@ -264,13 +276,125 @@ class OutputDebugService:
             files_found=integrity_info.get("files_found", 0),
         )
 
-    @staticmethod
     def _build_analysis_info(
+        self,
         file: TranslatedOutputFile,
     ) -> AnalysisDebugInfo:
         analysis = file.latest_analysis
         if analysis is None:
             return AnalysisDebugInfo()
+
+        # Resolve protection metadata from trace events if a resolver
+        # is available.  This is best-effort — failures are logged and
+        # do not crash the debug snapshot.
+        protection_metadata = None
+        if self._protection_metadata_resolver is not None:
+            try:
+                protection_metadata = self._protection_metadata_resolver.resolve(
+                    file.job_id,
+                )
+                # resolve() now returns {"metadata": ..., "snapshot": ...}
+                if isinstance(protection_metadata, dict) and "metadata" in protection_metadata:
+                    protection_metadata = protection_metadata["metadata"]
+            except Exception:
+                logger.debug(
+                    "Failed to resolve protection metadata for job %s",
+                    file.job_id, exc_info=True,
+                )
+
+        # Resolve shadow snapshot analysis from the analysis service
+        # (Phase 4).  Best-effort — failures are swallowed.
+        snapshot_analysis = None
+        if self._analysis_service is not None:
+            try:
+                sa = self._analysis_service.get_snapshot_analysis(file.id)
+                if sa is not None:
+                    snapshot_analysis = {
+                        "status": sa.status.value,
+                        "diagnostics": [
+                            {
+                                "severity": d.severity,
+                                "code": d.code,
+                                "message": d.message,
+                                "details": d.details,
+                            }
+                            for d in sa.diagnostics
+                        ],
+                        "created_at": sa.created_at,
+                    }
+                    # Include placeholder integrity info if available
+                    if (
+                        hasattr(sa, "placeholder_integrity_result")
+                        and sa.placeholder_integrity_result is not None
+                    ):
+                        pi = sa.placeholder_integrity_result
+                        snapshot_analysis["placeholder_integrity"] = {
+                            "status": pi.status,
+                            "checked_count": pi.checked_count,
+                            "issue_count": len(pi.issues),
+                            "issues_preview": [
+                                {
+                                    "code": i.code,
+                                    "severity": i.severity,
+                                    "placeholder_id": i.placeholder_id,
+                                    "token_type": i.token_type,
+                                    "original_text": i.original_text,
+                                    "rule_id": i.rule_id,
+                                }
+                                for i in pi.issues[:10]
+                            ],
+                            "summary": pi.summary,
+                        }
+                    # Include version_check info if available (Phase 8C)
+                    if (
+                        hasattr(sa, "version_check")
+                        and sa.version_check is not None
+                    ):
+                        snapshot_analysis["version_check"] = sa.version_check
+            except Exception:
+                logger.debug(
+                    "Failed to resolve snapshot analysis for file %s",
+                    file.id, exc_info=True,
+                )
+
+        # Resolve legacy vs. snapshot divergence (Phase 6D).
+        # Best-effort — failures are swallowed.
+        divergence = None
+        if self._analysis_service is not None:
+            try:
+                dvg = self._analysis_service.get_divergence(file.id)
+                if dvg is not None:
+                    divergence = {
+                        "divergence_type": dvg.divergence_type.value,
+                        "legacy_status": dvg.legacy_status,
+                        "snapshot_status": dvg.snapshot_status,
+                        "legacy_failed": dvg.legacy_failed,
+                        "snapshot_failed": dvg.snapshot_failed,
+                        "legacy_issue_codes": dvg.legacy_issue_codes,
+                        "snapshot_issue_codes": dvg.snapshot_issue_codes,
+                        "details": dvg.details,
+                    }
+            except Exception:
+                logger.debug(
+                    "Failed to resolve divergence for file %s",
+                    file.id, exc_info=True,
+                )
+
+        # Resolve profile staleness (Phase 8E).
+        # Best-effort — failures are swallowed.
+        profile_staleness = None
+        if self._profile_staleness_checker is not None and analysis is not None:
+            try:
+                staleness = self._profile_staleness_checker.check(
+                    analysis.analysis_metadata,
+                )
+                if staleness.status != "not_applicable":
+                    profile_staleness = staleness.to_dict()
+            except Exception:
+                logger.debug(
+                    "Failed to check profile staleness for file %s",
+                    file.id, exc_info=True,
+                )
 
         return AnalysisDebugInfo(
             latest_analysis_id=analysis.id,
@@ -279,6 +403,10 @@ class OutputDebugService:
             analysis_source_hash=analysis.source_hash,
             analysis_translated_hash=analysis.translated_hash,
             validity_state=TranslatedOutputFileRepository.get_analysis_state(file),
+            protection_metadata=protection_metadata,
+            snapshot_analysis=snapshot_analysis,
+            divergence=divergence,
+            profile_staleness=profile_staleness,
         )
 
     @staticmethod

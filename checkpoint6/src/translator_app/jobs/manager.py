@@ -80,7 +80,7 @@ MUTABLE_CONFIG_PATHS = frozenset({
     "prompt.single_user_template",
     "prompt.log_prompts",
     "batch_size",
-    "protection.strategy",
+    "protection.rule_set_ids",
     "protection.options",
     "validation.validator_name",
     "validation.options",
@@ -194,6 +194,8 @@ def _job_to_dict(job: TranslationJob) -> dict:
         "output_root_dir": job.output_root_dir,
         "created_at": job.created_at.isoformat() if hasattr(job.created_at, "isoformat") else str(job.created_at),
         "updated_at": job.updated_at.isoformat() if job.updated_at and hasattr(job.updated_at, "isoformat") else str(job.updated_at) if job.updated_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at and hasattr(job.started_at, "isoformat") else str(job.started_at) if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at and hasattr(job.completed_at, "isoformat") else str(job.completed_at) if job.completed_at else None,
         "error_message": job.error_message,
     }
 
@@ -205,6 +207,8 @@ def _dict_to_job(data: dict) -> Optional[TranslationJob]:
         priority = JobPriority(data.get("priority", 1))
         created_at = _parse_dt(data.get("created_at", ""))
         updated_at = _parse_dt(data.get("updated_at")) if data.get("updated_at") else None
+        started_at = _parse_dt(data.get("started_at")) if data.get("started_at") else None
+        completed_at = _parse_dt(data.get("completed_at")) if data.get("completed_at") else None
 
         diags = []
         for d in data.get("diagnostics", []):
@@ -239,6 +243,8 @@ def _dict_to_job(data: dict) -> Optional[TranslationJob]:
             output_root_dir=data.get("output_root_dir"),
             created_at=created_at,
             updated_at=updated_at,
+            started_at=started_at,
+            completed_at=completed_at,
             error_message=data.get("error_message"),
         )
     except Exception:
@@ -994,10 +1000,13 @@ class JobManager:
         if "protection" in overrides:
             prot_updates = overrides["protection"]
             if isinstance(prot_updates, dict):
-                if "strategy" in prot_updates:
-                    result.protection.strategy = prot_updates["strategy"]
-                if "options" in prot_updates:
-                    result.protection.options = dict(prot_updates["options"])
+                if "rule_set_ids" in prot_updates:
+                    result.protection.rule_set_ids = list(prot_updates["rule_set_ids"])
+                # Legacy backward compat
+                if "strategy" in prot_updates and not prot_updates.get("rule_set_ids"):
+                    from translator_app.protection.rule_set import DEFAULT_RULE_SET_ID
+                    if prot_updates["strategy"] and prot_updates["strategy"] != "none":
+                        result.protection.rule_set_ids = [DEFAULT_RULE_SET_ID]
 
         # Validation overrides
         if "validation" in overrides:
@@ -1017,7 +1026,7 @@ class JobManager:
             "prompt.batch_user_template": ("prompt", "batch_user_template"),
             "prompt.single_system_prompt": ("prompt", "single_system_prompt"),
             "prompt.single_user_template": ("prompt", "single_user_template"),
-            "protection.strategy": ("protection", "strategy"),
+            "protection.rule_set_ids": ("protection", "rule_set_ids"),
             "protection.options": ("protection", "options"),
             "validation.validator_name": ("validation", "validator_name"),
             "validation.options": ("validation", "options"),

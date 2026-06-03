@@ -13,11 +13,15 @@ from translator_app.backend.schemas.output_files import (
     OutputFilesSummaryResponse,
     OutputScanResultResponse,
     OutputFileTreeResponse,
+    JobTimestampInfo,
     ScanDiagnosticResponse,
+    FileContentsResponse,
 )
 from translator_app.outputs.models import TranslatedOutputFile
 from translator_app.outputs.repository import TranslatedOutputFileRepository
 from translator_app.outputs.scanner import ScanDiagnostic
+
+from pathlib import Path
 
 router = APIRouter(tags=["output-files"])
 
@@ -122,10 +126,35 @@ def get_output_files_tree(
 ):
     """Get the grouped tree of output files (jobs -> mods -> groups -> files)."""
     tree = svcs.output_files.get_tree(job_id=job_id)
+
+    # Build job timestamp + name lookup from the jobs service
+    job_timestamps: dict[str, JobTimestampInfo] = {}
+    job_names: dict[str, str] = {}
+    try:
+        for jid in tree.jobs:
+            try:
+                job = svcs.jobs.get_job(jid)
+                if job:
+                    def _ts(val):
+                        if val is None:
+                            return None
+                        return val.isoformat() if hasattr(val, "isoformat") else str(val)
+                    job_timestamps[jid] = JobTimestampInfo(
+                        created_at=_ts(job.created_at) or "",
+                        updated_at=_ts(job.updated_at),
+                        completed_at=_ts(job.completed_at),
+                    )
+                    job_names[jid] = job.name or ""
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     return OutputFileTreeResponse(
         jobs={
             jid: {
                 "job_id": node.job_id,
+                "name": job_names.get(jid, ""),
                 "mods": {
                     mid: {
                         "mod_id": mod_node.mod_id,
@@ -143,7 +172,8 @@ def get_output_files_tree(
                 },
             }
             for jid, node in tree.jobs.items()
-        }
+        },
+        job_timestamps=job_timestamps,
     )
 
 
@@ -155,6 +185,66 @@ def get_output_file(
     """Get full detail for a single output file."""
     file = svcs.output_files.get_file(output_file_id)
     return _file_to_response(file)
+
+
+@router.get(
+    "/output-files/{output_file_id}/file-contents",
+    response_model=FileContentsResponse,
+)
+def get_file_contents(
+    output_file_id: str,
+    svcs: Services = Depends(get_services),
+):
+    """Read source and translated file contents from disk (read-only).
+
+    Returns the raw file contents with existence flags.
+    Never writes, never uses the serializer, never mutates state.
+    """
+    try:
+        output_file = svcs.output_files_repo.get_by_id(output_file_id)
+    except Exception as exc:
+        raise APIError(
+            code="FILE_CONTENTS_LOAD_FAILED",
+            message=f"Failed to load file: {exc}",
+            status_code=500,
+        ) from exc
+
+    if not output_file:
+        raise APIError(
+            code="NOT_FOUND",
+            message=f"Output file not found: {output_file_id}",
+            status_code=404,
+        )
+
+    source_path = output_file.source_file_path
+    translated_path = output_file.translated_file_path
+
+    source_exists = Path(source_path).exists()
+    translated_exists = Path(translated_path).exists()
+
+    source_content = ""
+    translated_content = ""
+
+    if source_exists:
+        try:
+            source_content = Path(source_path).read_text(encoding="utf-8")
+        except (OSError, RuntimeError):
+            pass
+
+    if translated_exists:
+        try:
+            translated_content = Path(translated_path).read_text(encoding="utf-8")
+        except (OSError, RuntimeError):
+            pass
+
+    return FileContentsResponse(
+        source_path=source_path,
+        translated_path=translated_path,
+        source_content=source_content,
+        translated_content=translated_content,
+        source_exists=source_exists,
+        translated_exists=translated_exists,
+    )
 
 
 @router.get(

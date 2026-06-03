@@ -14,11 +14,11 @@
 /*  desync bugs.                                                       */
 /* ------------------------------------------------------------------ */
 
-import type { UseDraftJobSelectionApiReturn, DraftFileMeta } from '../contexts/DraftJobSelectionContext';
+import type { DraftFileMeta, DraftJobSelectionContextType } from '../contexts/DraftJobSelectionContext';
 import { useDraftJobSelection } from '../contexts/DraftJobSelectionContext';
 
 export type { DraftFileMeta };
-export type { UseDraftJobSelectionApiReturn };
+export type { DraftJobSelectionContextType as UseDraftJobSelectionApiReturn };
 
 /**
  * Hook providing the draft job selection API.
@@ -28,6 +28,6 @@ export type { UseDraftJobSelectionApiReturn };
  * state.  The backend is the source of truth; every mutation calls
  * the REST API and updates the shared context state from the response.
  */
-export function useDraftJobSelectionApi(): UseDraftJobSelectionApiReturn {
+export function useDraftJobSelectionApi(): DraftJobSelectionContextType {
   return useDraftJobSelection();
 }

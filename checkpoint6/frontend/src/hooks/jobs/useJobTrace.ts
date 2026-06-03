@@ -52,6 +52,11 @@ export function useJobTrace(options: UseJobTraceOptions): UseJobTraceResult {
         api.getTraceEvents(id),
         api.getTraceUnits(id, 50),
       ]);
+
+      // Ignore stale responses for a previous jobId (e.g. during rapid
+      // job switching before the effect cleanup has run).
+      if (id !== jobIdRef.current) return;
+
       const mappedTrace = mapTraceSnapshot(snap);
       setTrace(mappedTrace);
       setEvents(evts.map(mapTraceEvent));

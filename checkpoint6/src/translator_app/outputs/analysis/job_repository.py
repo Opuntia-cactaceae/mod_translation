@@ -235,6 +235,24 @@ class AnalysisJobRepository:
             return False
         return bool(row["cancel_requested"])
 
+    def mark_queued(self, job_id: str) -> None:
+        """Re-queue a running job back to queued status (e.g. after worker restart)."""
+        with self._lock:
+            conn = self.db.connect()
+            conn.execute(
+                """UPDATE output_analysis_jobs
+                   SET status = ?, started_at = NULL
+                   WHERE id = ? AND status != ? AND status != ? AND status != ?""",
+                (
+                    OutputAnalysisJobStatus.QUEUED.value,
+                    job_id,
+                    OutputAnalysisJobStatus.COMPLETED.value,
+                    OutputAnalysisJobStatus.FAILED.value,
+                    OutputAnalysisJobStatus.CANCELLED.value,
+                ),
+            )
+            conn.commit()
+
     def get_next_queued(self) -> Optional[OutputAnalysisJob]:
         """Get the oldest queued job, if any."""
         conn = self.db.connect()

@@ -5,6 +5,8 @@ import { GamePageLayout } from '../components/game/GamePageLayout';
 import { GAME_SECTIONS, type GameSectionContext } from '../components/game/sectionRegistry';
 import type { GameModel, FileHandlerModel, ModModel } from '../domain';
 import { mapGameOption, mapFileHandlerOption, hasFeature, mapModInfo } from '../domain';
+import { usePersistentState } from '../hooks/usePersistentState';
+import { STORAGE_KEYS } from '../utils/storageKeys';
 
 /* ------------------------------------------------------------------ */
 /*  Fallback (used when API is unreachable)                            */
@@ -31,6 +33,18 @@ export default function GamePage() {
   const [mods, setMods] = useState<ModModel[]>([]);
   const [lastScanPaths, setLastScanPaths] = useState<string[]>([]);
   const [modsLoading, setModsLoading] = useState(false);
+
+  // Lifted discovery scan state — persisted to localStorage so it
+  // survives GamePage unmount/remount (e.g. navigating away and back).
+  const [discoveredFiles, setDiscoveredFiles] = usePersistentState<string[]>(
+    `${STORAGE_KEYS.discoveryScannedFiles}.${gameId}`,
+    [],
+  );
+  const [discoveryScanning, setDiscoveryScanning] = useState(false);
+  const [discoveryScanError, setDiscoveryScanError] = usePersistentState<string | null>(
+    `${STORAGE_KEYS.discoveryScanError}.${gameId}`,
+    null,
+  );
 
   // Load previously discovered mods from backend cache on mount
   useEffect(() => {
@@ -149,6 +163,12 @@ export default function GamePage() {
     lastScanPaths,
     setLastScanPaths,
     refreshMods,
+    discoveredFiles,
+    setDiscoveredFiles,
+    discoveryScanning,
+    setDiscoveryScanning,
+    discoveryScanError,
+    setDiscoveryScanError,
   };
 
   return (

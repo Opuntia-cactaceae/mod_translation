@@ -4,7 +4,7 @@
 /*  settings. No dirty-flag checks — all-or-nothing apply.              */
 /* ------------------------------------------------------------------ */
 
-import type { ModInfoSchema, TranslationProfile } from '../../api/types';
+import type { TranslationProfile } from '../../api/types';
 import { getProfileFormConfig } from './useCreateJobFlow';
 import type { FieldSetters } from './useCreateJobFields';
 import { getNestedValue } from '../../domain/configFieldRegistry';
@@ -16,20 +16,14 @@ import { getNestedValue } from '../../domain/configFieldRegistry';
 
 /**
  * Apply the selected profile's config to form fields unconditionally.
- * Does NOT touch file-related fields (file paths, mod selection, etc.).
+ * Does NOT touch file-related fields (file paths, etc.).
  * Does NOT check dirty flags — all-or-nothing.
- *
- * When `selectedMod` is provided (a mod is currently selected), the profile's
- * `game` and `file_handler` are NOT applied — only runtime/prompt/output/etc.
- * settings are applied. This prevents desync between the selected mod and the
- * internal game config.
  */
 export function applyProfileToForm(
   profiles: TranslationProfile[],
   selectedProfileId: string,
   fieldSetters: FieldSetters,
   setGameConfig: (updater: Record<string, unknown> | null | ((prev: Record<string, unknown> | null) => Record<string, unknown> | null)) => void,
-  selectedMod: ModInfoSchema | null = null,
 ): void {
   const profileConfig = getProfileFormConfig(profiles, selectedProfileId);
   if (!profileConfig) return;
@@ -95,12 +89,14 @@ export function applyProfileToForm(
   const singleUserTemplate = getNestedValue(cfg, 'prompt.single_user_template');
   if (singleUserTemplate != null && singleUserTemplate !== '') fieldSetters.setSingleUserTemplate(String(singleUserTemplate));
 
-  // logPrompts — apply explicitly to allow false override (Task 6)
   const logPrompts = getNestedValue(cfg, 'prompt.log_prompts');
   if (logPrompts != null) fieldSetters.setLogPrompts(Boolean(logPrompts));
 
   const protectionStrategy = getNestedValue(cfg, 'protection.strategy');
   if (protectionStrategy != null && protectionStrategy !== '') fieldSetters.setProtectionStrategy(String(protectionStrategy));
+
+  const ruleSetIds = getNestedValue(cfg, 'protection.rule_set_ids');
+  if (ruleSetIds != null && Array.isArray(ruleSetIds)) fieldSetters.setRuleSetIds(ruleSetIds as string[]);
 
   const validatorName = getNestedValue(cfg, 'validation.validator_name');
   if (validatorName != null && validatorName !== '') fieldSetters.setValidatorName(String(validatorName));
@@ -122,15 +118,11 @@ export function applyProfileToForm(
   if (backup != null) fieldSetters.setOutputBackup(Boolean(backup));
 
   // --- Game / file_handler ---
-  // When a mod is selected, skip profile's game/file_handler to prevent
-  // desync between the selected mod and the runtime game config.
-  if (!selectedMod) {
-    if (profileConfig.game || profileConfig.file_handler) {
-      setGameConfig(prev => ({
-        ...(prev || {}),
-        ...(profileConfig.game ? { game: profileConfig.game } : {}),
-        ...(profileConfig.file_handler ? { file_handler: profileConfig.file_handler } : {}),
-      }));
-    }
+  if (profileConfig.game || profileConfig.file_handler) {
+    setGameConfig(prev => ({
+      ...(prev || {}),
+      ...(profileConfig.game ? { game: profileConfig.game } : {}),
+      ...(profileConfig.file_handler ? { file_handler: profileConfig.file_handler } : {}),
+    }));
   }
 }

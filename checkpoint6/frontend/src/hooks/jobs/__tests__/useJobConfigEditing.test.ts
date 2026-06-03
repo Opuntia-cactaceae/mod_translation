@@ -26,6 +26,7 @@ vi.mock('../../../App', () => ({
 }));
 
 import { useJobConfigEditing } from '../useJobConfigEditing';
+import { createTestJobConfig } from '../../../testUtils';
 
 /* ================================================================== */
 /*  Fixtures                                                           */
@@ -36,13 +37,12 @@ const mockJob: JobModel = {
   name: 'Test Job',
   status: 'running',
   filePaths: ['/path/to/file.txt'],
-  config: {
+  config: createTestJobConfig({
     runtime: { model: 'gpt-4' },
-    batch_size: 50,
     prompt: { profile_name: 'default' },
-    protection: { strategy: 'none' },
+    protection: { strategy: 'none', rule_set_ids: [] },
     validation: { validator_name: 'standard' },
-  },
+  }),
   totalUnits: 10,
   completedUnits: 5,
   failedUnits: 0,
@@ -119,6 +119,7 @@ describe('useJobConfigEditing', () => {
         batch_size: '50',
         prompt_profile: 'default',
         protection_strategy: 'none',
+        rule_set_ids: '',
         validator: 'standard',
       });
     });
@@ -136,6 +137,7 @@ describe('useJobConfigEditing', () => {
         batch_size: '\u2014',
         prompt_profile: '\u2014',
         protection_strategy: '\u2014',
+        rule_set_ids: '',
         validator: '\u2014',
       });
     });
@@ -188,6 +190,7 @@ describe('useJobConfigEditing', () => {
         batch_size: '50',
         prompt_profile: 'default',
         protection_strategy: 'none',
+        rule_set_ids: '',
         validator: 'standard',
       });
     });

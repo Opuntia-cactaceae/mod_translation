@@ -1,11 +1,13 @@
 /* ------------------------------------------------------------------ */
 /*  OutputFileActions — details/editor/analyze/debug buttons           */
 /* ------------------------------------------------------------------ */
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError, useToast } from '../../App';
 import type { OutputFile } from '../../api/types';
 import type { OutputAnalysisResult, OutputFileDebugSnapshot } from '../../api/types';
+import FreshnessBadge from '../common/FreshnessBadge';
+import ResultBadge from '../common/ResultBadge';
 
 interface Props {
   file: OutputFile;
@@ -18,15 +20,42 @@ export default function OutputFileActions({ file, onClose, onAnalysisComplete }:
   const toast = useToast();
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<OutputAnalysisResult | null>(null);
+  const [savedAnalysis, setSavedAnalysis] = useState<OutputAnalysisResult | null>(null);
+  const [loadingSavedAnalysis, setLoadingSavedAnalysis] = useState(false);
   const [debugData, setDebugData] = useState<OutputFileDebugSnapshot | null>(null);
   const [loadingDebug, setLoadingDebug] = useState(false);
   const [debugExpanded, setDebugExpanded] = useState(false);
   const [openingSource, setOpeningSource] = useState(false);
   const [openingTranslated, setOpeningTranslated] = useState(false);
+  const mountRef = useRef(0);
+
+  // Fetch the latest saved analysis when the modal opens or file changes
+  useEffect(() => {
+    const id = ++mountRef.current;
+    setLoadingSavedAnalysis(true);
+    setSavedAnalysis(null);
+    setAnalysisResult(null);
+
+    api.getOutputFileLatestAnalysis(file.id)
+      .then((result) => {
+        // Only apply if this is still the latest mount (avoid stale responses)
+        if (id === mountRef.current) {
+          setSavedAnalysis(result);
+        }
+      })
+      .catch(() => {
+        // Silently ignore — the manual Analyze button is still available
+      })
+      .finally(() => {
+        if (id === mountRef.current) {
+          setLoadingSavedAnalysis(false);
+        }
+      });
+  }, [file.id]);
 
   function handleOpenEditor() {
     onClose();
-    navigate(`/translated-files/${file.id}/editor`);
+    navigate(`/translated-files/${file.id}/editor`, { state: { jobId: file.job_id } });
   }
 
   async function handleAnalyze() {
@@ -35,6 +64,7 @@ export default function OutputFileActions({ file, onClose, onAnalysisComplete }:
     try {
       const result = await api.analyzeOutputFile(file.id, { checks: ['compilability', 'placeholders'], save: true });
       setAnalysisResult(result);
+      setSavedAnalysis(null); // fresh result supersedes saved
       toast.showToast(`Analysis: ${result.status} (E:${result.errors_count} W:${result.warnings_count})`, result.status === 'passed' ? 'success' : 'error');
       if (onAnalysisComplete) onAnalysisComplete(result);
     } catch (err) {
@@ -104,6 +134,51 @@ export default function OutputFileActions({ file, onClose, onAnalysisComplete }:
     return h.length > 16 ? h.substring(0, 16) + '...' : h;
   }
 
+  // Prefer fresh manual analysis result over saved result from DB
+  const displayResult = analysisResult ?? savedAnalysis;
+
+  function renderDiagnostics(diags: OutputAnalysisResult['diagnostics']) {
+    if (diags.length === 0) {
+      return <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted, #888)', marginTop: '0.5rem' }}>No diagnostics found.</p>;
+    }
+
+    // Check if SNAPSHOT_UNAVAILABLE is the root cause
+    const hasSnapshotUnavailable = diags.some(
+      d => d.code === 'SNAPSHOT_UNAVAILABLE' && d.severity === 'error'
+    );
+
+    return (
+      <div style={{ marginTop: '0.5rem' }}>
+        {hasSnapshotUnavailable && (
+          <div className="alert alert-warning" style={{ fontSize: '0.75rem', marginBottom: '0.5rem', padding: '0.4rem 0.6rem' }}>
+            <strong>Authoritative analysis unavailable.</strong>{' '}
+            Snapshot-based token integrity and placeholder checks could not be performed.
+            Supplementary findings below are non-authoritative.
+          </div>
+        )}
+        <div className="custom-scrollbar" style={{ maxHeight: 240, overflowY: 'auto', fontSize: '0.75rem' }}>
+          {diags.map((d, i) => (
+            <div key={i} className={`diagnostic-row diag-${d.severity}`}>
+              <div className="diagnostic-row-header">
+                <span className={`diagnostic-severity-badge diag-${d.severity}`}>
+                  {d.severity === 'error' ? 'ERROR' : d.severity === 'warning' ? 'WARNING' : 'INFO'}
+                </span>
+                <span className="diagnostic-code">{d.code}</span>
+              </div>
+              <div className="diagnostic-message">{d.message}</div>
+              <div className="diagnostic-meta">
+                {d.key && <span className="diagnostic-meta-chip">key: {d.key}</span>}
+                {d.line != null && <span className="diagnostic-meta-chip">line: {d.line}</span>}
+                {d.details?.reason != null && typeof d.details.reason === 'string' && <span className="diagnostic-meta-chip">reason: {d.details.reason as string}</span>}
+                {d.source && <span className="diagnostic-meta-chip">{d.source}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
@@ -139,7 +214,14 @@ export default function OutputFileActions({ file, onClose, onAnalysisComplete }:
             </div>
             <div className="field-value">
               <span className="field-value-label">Status</span>
-              <span className="field-value-value">{file.status}{file.analysis_stale ? ' (stale)' : ''}</span>
+              <span className="field-value-value">
+                <span style={{ display: 'inline-flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <span className={`badge badge-${file.status === 'ready' ? 'success' : file.status === 'missing_source' ? 'error' : 'muted'}`}>
+                    {file.status === 'ready' ? 'Ready' : file.status === 'missing_source' ? 'Missing Source' : file.status}
+                  </span>
+                  {file.latest_analysis_state && <FreshnessBadge state={file.latest_analysis_state} />}
+                </span>
+              </span>
             </div>
             <div className="field-value">
               <span className="field-value-label">Source Path</span>
@@ -181,52 +263,57 @@ export default function OutputFileActions({ file, onClose, onAnalysisComplete }:
               <span className="field-value-label">Updated</span>
               <span className="field-value-value">{file.updated_at ? new Date(file.updated_at).toLocaleString() : '\u2014'}</span>
             </div>
-            {(file.latest_analysis || analysisResult) && (
+            {(file.latest_analysis || displayResult || loadingSavedAnalysis) && (
               <>
                 <div className="field-value">
                   <span className="field-value-label">Analysis</span>
-                  <span className="field-value-value">{(analysisResult || file.latest_analysis)?.status}</span>
+                  <span className="field-value-value">
+                    {loadingSavedAnalysis ? (
+                      <span className="badge badge-muted">Loading...</span>
+                    ) : (
+                      <ResultBadge
+                        status={displayResult?.status}
+                        errorsCount={displayResult?.errors_count}
+                        warningsCount={displayResult?.warnings_count}
+                      />
+                    )}
+                  </span>
                 </div>
                 <div className="field-value">
                   <span className="field-value-label">Compilability</span>
-                  <span className="field-value-value mono">{(analysisResult || file.latest_analysis)?.compilability_score ?? '\u2014'}</span>
+                  <span className="field-value-value mono">{displayResult?.compilability_score ?? '\u2014'}</span>
                 </div>
                 <div className="field-value">
                   <span className="field-value-label">Placeholders</span>
-                  <span className="field-value-value mono">{(analysisResult || file.latest_analysis)?.placeholders_score ?? '\u2014'}</span>
+                  <span className="field-value-value mono">{displayResult?.placeholders_score ?? '\u2014'}</span>
                 </div>
                 <div className="field-value">
                   <span className="field-value-label">Errors / Warnings</span>
-                  <span className="field-value-value mono">{(analysisResult || file.latest_analysis)?.errors_count ?? 0} / {(analysisResult || file.latest_analysis)?.warnings_count ?? 0}</span>
+                  <span className="field-value-value mono">{displayResult?.errors_count ?? 0} / {displayResult?.warnings_count ?? 0}</span>
                 </div>
               </>
             )}
           </div>
 
           {/* Analysis diagnostics */}
-          {analysisResult && analysisResult.diagnostics.length > 0 && (
+          {loadingSavedAnalysis && (
             <div style={{ marginTop: '1rem' }}>
-              <strong style={{ fontSize: '0.8rem' }}>Diagnostics ({analysisResult.diagnostics.length})</strong>
-              <div className="custom-scrollbar" style={{ maxHeight: 240, overflowY: 'auto', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-                {analysisResult.diagnostics.map((d, i) => (
-                  <div
-                    key={i}
-                    className={`diagnostic-row diag-${d.severity}`}
-                  >
-                    <div className="diagnostic-row-header">
-                      <span className={`diagnostic-severity-badge diag-${d.severity}`}>
-                        {d.severity === 'error' ? 'ERROR' : d.severity === 'warning' ? 'WARNING' : 'INFO'}
-                      </span>
-                      <span className="diagnostic-code">{d.code}</span>
-                    </div>
-                    <div className="diagnostic-message">{d.message}</div>
-                    <div className="diagnostic-meta">
-                      {d.key && <span className="diagnostic-meta-chip">key: {d.key}</span>}
-                      {d.line != null && <span className="diagnostic-meta-chip">line: {d.line}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted, #888)' }}>Loading saved diagnostics...</p>
+            </div>
+          )}
+          {displayResult && (
+            <div style={{ marginTop: '1rem' }}>
+              <strong style={{ fontSize: '0.8rem' }}>
+                Diagnostics ({displayResult.diagnostics.length})
+              </strong>
+              {renderDiagnostics(displayResult.diagnostics)}
+            </div>
+          )}
+          {!loadingSavedAnalysis && !displayResult && !analyzing && (
+            <div style={{ marginTop: '1rem' }}>
+              <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted, #888)' }}>
+                No saved analysis result for this file yet. Click <strong>Analyze</strong> to run analysis.
+              </p>
             </div>
           )}
 

@@ -46,7 +46,7 @@ class OutputFileResponse(BaseModel):
     status: str = "ready"
     analysis_stale: bool = False
     latest_analysis: Optional[OutputFileAnalysisSummaryResponse] = None
-    latest_analysis_state: str = "missing"
+    latest_analysis_state: str = "not_analyzed"
     output_metadata: Optional[Dict[str, Any]] = None
 
 
@@ -82,13 +82,23 @@ class OutputJobNodeResponse(BaseModel):
     """A job node in the output files tree."""
 
     job_id: str
+    name: str = ""
     mods: Dict[str, OutputModNodeResponse] = {}
+
+
+class JobTimestampInfo(BaseModel):
+    """Timestamp info for a job, used for date grouping."""
+
+    created_at: str = ""
+    updated_at: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class OutputFileTreeResponse(BaseModel):
     """The full output files tree response."""
 
     jobs: Dict[str, OutputJobNodeResponse] = {}
+    job_timestamps: Dict[str, JobTimestampInfo] = {}
 
 
 class OutputFileListResponse(BaseModel):
@@ -115,6 +125,17 @@ class OutputFilesSummaryResponse(BaseModel):
     stale_count: int = 0
 
 
+class FileContentsResponse(BaseModel):
+    """Response with source and translated file contents (read-only)."""
+
+    source_path: str = ""
+    translated_path: str = ""
+    source_content: str = ""
+    translated_content: str = ""
+    source_exists: bool = False
+    translated_exists: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Analysis schemas
 # ---------------------------------------------------------------------------
@@ -138,6 +159,7 @@ class OutputAnalyzeRequest(BaseModel):
 
     checks: List[str] = ["compilability", "placeholders"]
     save: bool = True
+    protection_profile_id: Optional[str] = None
 
 
 class OutputBatchAnalyzeRequest(BaseModel):
@@ -150,6 +172,7 @@ class OutputBatchAnalyzeRequest(BaseModel):
     checks: List[str] = ["compilability", "placeholders"]
     save: bool = True
     only_stale: bool = False
+    protection_profile_id: Optional[str] = None
 
 
 class OutputAnalysisResultResponse(BaseModel):

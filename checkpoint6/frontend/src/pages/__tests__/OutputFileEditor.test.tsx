@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react';
 import React from 'react';
-import type { OutputFileEditorPayload, OutputAnalysisResult, FileContentsResponse } from '../../api/types';
+import type { EditorSessionState, OutputAnalysisResult, FileContentsResponse } from '../../api/types';
 
 /* ------------------------------------------------------------------ */
 /*  Cleanup                                                            */
@@ -12,29 +12,40 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+beforeEach(() => {
+  mockNavigate.mockClear();
+  mockLocationState = { jobId: 'test-job-id' };
+});
+
 /* ------------------------------------------------------------------ */
 /*  Mocks                                                              */
 /* ------------------------------------------------------------------ */
 
 const mockNavigate = vi.fn();
-const mockGetOutputEditorPayload = vi.fn();
+const mockOpenEditorSession = vi.fn();
 const mockGetOutputFileLatestAnalysis = vi.fn();
 const mockAnalyzeOutputFile = vi.fn();
-const mockSaveOutputTranslatedContent = vi.fn();
+const mockSaveEditorSessionToDisk = vi.fn();
 const mockGetFileContents = vi.fn();
+const mockUpdateSessionEntry = vi.fn();
+
+// Controllable location state — set per test to simulate editor back nav context
+let mockLocationState: Record<string, unknown> | null = { jobId: 'test-job-id' };
 
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ outputFileId: 'test-file-id' }),
   useNavigate: () => mockNavigate,
+  useLocation: () => ({ state: mockLocationState }),
 }));
 
 vi.mock('../../App', () => ({
   api: {
-    getOutputEditorPayload: (...args: unknown[]) => mockGetOutputEditorPayload(...args),
+    openEditorSession: (...args: unknown[]) => mockOpenEditorSession(...args),
     getOutputFileLatestAnalysis: (...args: unknown[]) => mockGetOutputFileLatestAnalysis(...args),
     analyzeOutputFile: (...args: unknown[]) => mockAnalyzeOutputFile(...args),
-    saveOutputTranslatedContent: (...args: unknown[]) => mockSaveOutputTranslatedContent(...args),
+    saveEditorSessionToDisk: (...args: unknown[]) => mockSaveEditorSessionToDisk(...args),
     getFileContents: (...args: unknown[]) => mockGetFileContents(...args),
+    updateSessionEntry: (...args: unknown[]) => mockUpdateSessionEntry(...args),
   },
   ApiError: class MockApiError extends Error {
     code: string;
@@ -58,7 +69,7 @@ vi.mock('../../App', () => ({
 /*  Fixtures                                                           */
 /* ------------------------------------------------------------------ */
 
-function makePayload(overrides: Partial<OutputFileEditorPayload> = {}): OutputFileEditorPayload {
+function makeSessionState(overrides: Partial<EditorSessionState> = {}): EditorSessionState {
   return {
     output_file_id: 'test-file-id',
     job_id: 'test-job-id',
@@ -67,11 +78,13 @@ function makePayload(overrides: Partial<OutputFileEditorPayload> = {}): OutputFi
     parser_id: 'stellaris_localisation',
     game_id: 'stellaris',
     source_content: 'l_english:\n key:0 "Hello"',
-    translated_content: 'l_english:\n key:0 "Привет"',
+    translated_text: 'l_english:\n key:0 "Привет"',
     structured: true,
     entries: [
-      { key: 'key', source_text: 'Hello', translated_text: 'Привет', source_line: 2, translated_line: 2, entry_type: 'translatable', translatable: true, metadata: {} },
+      { key: 'key', source_text: 'Hello', translated_text: 'Привет', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
     ],
+    revision: 0,
+    dirty: false,
     metadata: {
       file_name: 'file.yml',
       file_ext: '.yml',
@@ -80,7 +93,7 @@ function makePayload(overrides: Partial<OutputFileEditorPayload> = {}): OutputFi
       updated_at: '2025-01-01T00:00:00Z',
       status: 'completed',
       analysis_stale: false,
-      latest_analysis_state: 'valid',
+      latest_analysis_state: 'current',
     },
     ...overrides,
   };
@@ -140,10 +153,10 @@ function makeAnalysisResult(overrides: Partial<OutputAnalysisResult> = {}): Outp
 /*  Render helper                                                      */
 /* ------------------------------------------------------------------ */
 
-async function renderEditor(payload?: OutputFileEditorPayload, analysis?: OutputAnalysisResult) {
-  mockGetOutputEditorPayload.mockResolvedValue(payload ?? makePayload());
+async function renderEditor(sessionState?: EditorSessionState, analysis?: OutputAnalysisResult) {
+  mockOpenEditorSession.mockResolvedValue(sessionState ?? makeSessionState());
   mockGetOutputFileLatestAnalysis.mockResolvedValue(analysis ?? makeAnalysisResult());
-  mockSaveOutputTranslatedContent.mockResolvedValue({ success: true, updated_at: '2025-01-01T00:00:01Z', translated_size_bytes: 100, status: 'completed', analysis_stale: true });
+  mockSaveEditorSessionToDisk.mockResolvedValue({ success: true, updated_at: '2025-01-01T00:00:01Z', translated_size_bytes: 100, status: 'completed', analysis_stale: true, revision: 0, dirty: false });
 
   const OutputFileEditor = (await import('../OutputFileEditor')).default;
   return render(React.createElement(OutputFileEditor));
@@ -156,8 +169,8 @@ async function renderEditor(payload?: OutputFileEditorPayload, analysis?: Output
 describe('OutputFileEditor diagnostics panel', () => {
 
   it('renders loading state initially', async () => {
-    // Keep payload promise pending
-    mockGetOutputEditorPayload.mockReturnValue(new Promise(() => {}));
+    // Keep session promise pending
+    mockOpenEditorSession.mockReturnValue(new Promise(() => {}));
     mockGetOutputFileLatestAnalysis.mockResolvedValue(null);
 
     const OutputFileEditor = (await import('../OutputFileEditor')).default;
@@ -173,7 +186,8 @@ describe('OutputFileEditor diagnostics panel', () => {
 
     // Check status badge (appears in diagnostics panel + file info)
     await waitFor(() => {
-      expect(screen.getAllByText('failed').length).toBeGreaterThanOrEqual(1);
+      const failedBadges = screen.getAllByText((content) => content.startsWith('Failed'));
+      expect(failedBadges.length).toBeGreaterThanOrEqual(1);
     });
 
     // Check diagnostics panel header
@@ -259,7 +273,7 @@ describe('OutputFileEditor diagnostics panel', () => {
       warnings_count: 0,
     });
 
-    await renderEditor(makePayload(), analysisWithNoErrors);
+    await renderEditor(makeSessionState(), analysisWithNoErrors);
 
     // Click Errors filter
     await waitFor(() => {
@@ -287,7 +301,7 @@ describe('OutputFileEditor diagnostics panel', () => {
 
   it('renders diagnostics panel only when diagnostics exist', async () => {
     const noDiagResult = makeAnalysisResult({ diagnostics: [], errors_count: 0, warnings_count: 0 });
-    await renderEditor(makePayload(), noDiagResult);
+    await renderEditor(makeSessionState(), noDiagResult);
 
     await waitFor(() => {
       // Diagnostics panel should not appear
@@ -298,7 +312,7 @@ describe('OutputFileEditor diagnostics panel', () => {
   it('renders diagnostics in OutputFileActions modal style', async () => {
     // Verify the diagnostic CSS classes are applied by checking rendered structure
     const analysis = makeAnalysisResult();
-    await renderEditor(makePayload(), analysis);
+    await renderEditor(makeSessionState(), analysis);
 
     await waitFor(() => {
       expect(screen.getByText('ERROR')).toBeTruthy();
@@ -370,12 +384,12 @@ describe('OutputFileEditor side-by-side table layout', () => {
   });
 
   it('renders key cell with em dash placeholder when key is empty', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: '', source_text: 'Hello', translated_text: 'Привет', source_line: 2, translated_line: 2, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       // Key cell should contain the em dash visual placeholder
       const keyCell = document.querySelectorAll('td')[2];
@@ -386,12 +400,12 @@ describe('OutputFileEditor side-by-side table layout', () => {
 
   it('renders long source text with wrapping styles', async () => {
     const longText = 'A very long source text that should wrap properly without horizontal truncation ' + 'x'.repeat(200);
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: 'long_key', source_text: longText, translated_text: 'Short translation', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       const sourceCell = document.querySelectorAll('td')[3];
       expect(sourceCell).toBeTruthy();
@@ -407,24 +421,24 @@ describe('OutputFileEditor side-by-side table layout', () => {
   });
 
   it('renders type badge compactly for translation_entry', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: 'k1', source_text: 'Hello', translated_text: 'Hola', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
-      expect(screen.getByText('entry')).toBeTruthy();
+      expect(screen.getByText('ENTRY')).toBeTruthy();
     });
   });
 
   it('renders raw_unknown rows with read-only placeholder instead of textarea', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: '', source_text: '', translated_text: null, source_line: 2, translated_line: 2, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       // Should have no textarea in the table for raw_unknown row
       const textareas = document.querySelectorAll('table.side-by-side-editor-table textarea');
@@ -444,19 +458,176 @@ describe('OutputFileEditor side-by-side table layout', () => {
 });
 
 /* ================================================================== */
+/*  Scroll Container Tests                                              */
+/* ================================================================== */
+
+describe('OutputFileEditor scroll container', () => {
+
+  it('renders editor content inside editor-scroll-container', async () => {
+    await renderEditor();
+    await waitFor(() => {
+      const container = document.querySelector('.editor-scroll-container');
+      expect(container).toBeTruthy();
+    });
+  });
+
+  it('clicking diagnostic calls scrollTo on editor container, not window', async () => {
+    await renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByText('ERROR')).toBeTruthy();
+    });
+
+    const container = document.querySelector('.editor-scroll-container') as HTMLElement;
+    expect(container).toBeTruthy();
+
+    // Mock scrollTo on the container instance (not prototype) so the
+    // assertion can distinguish this container's scroll from others.
+    container.scrollTo = vi.fn();
+    // In jsdom clientHeight/scrollTop default to 0 — set realistic values.
+    Object.defineProperty(container, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(container, 'scrollTop', { value: 0, configurable: true });
+
+    // Mock container bounding rect
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 0, bottom: 800, left: 0, right: 600,
+      height: 800, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+
+    // Mock target row bounding rect (positioned below the visible area)
+    const targetRow = container.querySelector('[data-entry-line="2"]') as HTMLElement;
+    expect(targetRow).toBeTruthy();
+    vi.spyOn(targetRow, 'getBoundingClientRect').mockReturnValue({
+      top: 1200, bottom: 1230, left: 0, right: 600,
+      height: 30, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(targetRow, 'offsetHeight', { value: 30, configurable: true });
+
+    // Click the error diagnostic (CHANGED_PLACEHOLDER has line=2)
+    const errorDiag = screen.getByText('CHANGED_PLACEHOLDER');
+    const diagRow = errorDiag.closest('.diagnostic-row')!;
+    fireEvent.click(diagRow);
+
+    await waitFor(() => {
+      expect(container.scrollTo).toHaveBeenCalled();
+    });
+
+    vi.restoreAllMocks();
+  });
+
+  it('jump-to-line highlights the target row', async () => {
+    await renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByText('ERROR')).toBeTruthy();
+    });
+
+    const container = document.querySelector('.editor-scroll-container') as HTMLElement;
+    expect(container).toBeTruthy();
+
+    // Ensure clientHeight is realistic so the row appears "visible"
+    Object.defineProperty(container, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(container, 'scrollTop', { value: 0, configurable: true });
+
+    // Mock container bounding rect
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 0, bottom: 800, left: 0, right: 600,
+      height: 800, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+
+    // Mock target row bounding rect (within visible area)
+    const targetRow = container.querySelector('[data-entry-line="2"]') as HTMLElement;
+    expect(targetRow).toBeTruthy();
+    vi.spyOn(targetRow, 'getBoundingClientRect').mockReturnValue({
+      top: 200, bottom: 230, left: 0, right: 600,
+      height: 30, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(targetRow, 'offsetHeight', { value: 30, configurable: true });
+
+    // Click the error diagnostic
+    const errorDiag = screen.getByText('CHANGED_PLACEHOLDER');
+    const diagRow = errorDiag.closest('.diagnostic-row')!;
+    fireEvent.click(diagRow);
+
+    // The row with data-entry-line=2 should have the highlight style
+    await waitFor(() => {
+      const row = container.querySelector('[data-entry-line="2"]') as HTMLElement;
+      expect(row.style.backgroundColor).toBe('var(--color-highlight-bg)');
+    });
+
+    vi.restoreAllMocks();
+  });
+
+  it('does not scroll when target line is already fully visible', async () => {
+    await renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByText('ERROR')).toBeTruthy();
+    });
+
+    const container = document.querySelector('.editor-scroll-container') as HTMLElement;
+    expect(container).toBeTruthy();
+
+    // Instance-level mock so we can assert it was NOT called
+    container.scrollTo = vi.fn();
+    Object.defineProperty(container, 'clientHeight', { value: 800, configurable: true });
+    Object.defineProperty(container, 'scrollTop', { value: 0, configurable: true });
+
+    // Mock container: 800px tall
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      top: 0, bottom: 800, left: 0, right: 600,
+      height: 800, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+
+    // Mock target row: fully visible (relativeTop=200, fits within 800px)
+    const targetRow = container.querySelector('[data-entry-line="2"]') as HTMLElement;
+    expect(targetRow).toBeTruthy();
+    vi.spyOn(targetRow, 'getBoundingClientRect').mockReturnValue({
+      top: 200, bottom: 230, left: 0, right: 600,
+      height: 30, width: 600, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(targetRow, 'offsetHeight', { value: 30, configurable: true });
+
+    // Click diagnostic
+    const errorDiag = screen.getByText('CHANGED_PLACEHOLDER');
+    const diagRow = errorDiag.closest('.diagnostic-row')!;
+    fireEvent.click(diagRow);
+
+    // scrollTo should NOT be called because the row is already visible
+    await waitFor(() => {
+      expect(container.scrollTo).not.toHaveBeenCalled();
+    });
+
+    // But the highlight should still be set
+    await waitFor(() => {
+      const row = container.querySelector('[data-entry-line="2"]') as HTMLElement;
+      expect(row.style.backgroundColor).toBe('var(--color-highlight-bg)');
+    });
+
+    vi.restoreAllMocks();
+  });
+});
+
+/* ================================================================== */
 /*  RAW_UNKNOWN / Non-Translatable Row Tests                           */
 /* ================================================================== */
 
 describe('OutputFileEditor non-editable rows', () => {
 
   it('shows read-only placeholder for raw_unknown rows instead of textarea', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: 'k1', source_text: 'Hello', translated_text: 'Hola', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
         { key: '', source_text: '\u2014', translated_text: null, source_line: 3, translated_line: 3, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       // Should have exactly one textarea (only for the translatable entry)
       const textareas = document.querySelectorAll('table.side-by-side-editor-table textarea');
@@ -469,12 +640,12 @@ describe('OutputFileEditor non-editable rows', () => {
   });
 
   it('shows read-only placeholder with "Not translatable" for non-translatable entries', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: 'nt', source_text: 'Some text', translated_text: null, source_line: 2, translated_line: 2, entry_type: 'comment', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       const placeholders = document.querySelectorAll('.editor-readonly-placeholder');
       expect(placeholders.length).toBe(1);
@@ -483,13 +654,13 @@ describe('OutputFileEditor non-editable rows', () => {
   });
 
   it('marks non-editable rows with row-non-editable class', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: 'k1', source_text: 'Hello', translated_text: 'Hola', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
         { key: '', source_text: 'raw', translated_text: null, source_line: 3, translated_line: 3, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       const rows = document.querySelectorAll('tr.row-non-editable');
       expect(rows.length).toBe(1);
@@ -497,12 +668,12 @@ describe('OutputFileEditor non-editable rows', () => {
   });
 
   it('renders key as muted em dash with "No key" tooltip for empty-key entries', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: '', source_text: 'raw line', translated_text: null, source_line: 2, translated_line: 2, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       const keyCell = document.querySelectorAll('td')[2];
       expect(keyCell).toBeTruthy();
@@ -512,12 +683,12 @@ describe('OutputFileEditor non-editable rows', () => {
   });
 
   it('shows muted badge for non-editable rows', async () => {
-    const payload = makePayload({
+    const session = makeSessionState({
       entries: [
         { key: '', source_text: 'raw', translated_text: null, source_line: 2, translated_line: 2, entry_type: 'raw_unknown', translatable: false, metadata: {} },
       ],
     });
-    await renderEditor(payload);
+    await renderEditor(session);
     await waitFor(() => {
       const badges = document.querySelectorAll('table.side-by-side-editor-table .badge');
       expect(badges.length).toBe(1);
@@ -702,6 +873,215 @@ describe('OutputFileEditor file viewer', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Translated file does not exist on disk.')).toBeTruthy();
+    });
+  });
+});
+
+/* ================================================================== */
+/*  Missing Translation / Null Translated Text Tests                   */
+/* ================================================================== */
+
+describe('OutputFileEditor null translated_text handling', () => {
+
+  it('renders missing-translation state for entries with null translated_text', async () => {
+    const session = makeSessionState({
+      entries: [
+        { key: 'A', source_text: 'Hello A', translated_text: 'Translated A', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+        { key: 'B', source_text: 'Hello B', translated_text: null, source_line: 3, translated_line: 0, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+    await renderEditor(session);
+
+    await waitFor(() => {
+      // Entry A should have a normal textarea (no missing-translation class)
+      const textareas = document.querySelectorAll('table.side-by-side-editor-table textarea');
+      expect(textareas.length).toBe(2);
+    });
+
+    // Entry B's parent td should contain the editor-missing-translation wrapper
+    const missingCells = document.querySelectorAll('.editor-missing-translation');
+    expect(missingCells.length).toBe(1);
+
+    // The missing cell should show the "No translation" placeholder
+    const textarea = missingCells[0].querySelector('textarea');
+    expect(textarea).toBeTruthy();
+    expect(textarea?.getAttribute('placeholder')).toBe('No translation');
+    expect(textarea?.value).toBe('');
+    expect(textarea?.className).toContain('form-control-missing');
+  });
+
+  it('renders normal textarea for entries with non-null translated_text', async () => {
+    const session = makeSessionState({
+      entries: [
+        { key: 'A', source_text: 'Hello A', translated_text: 'Translated A', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+    await renderEditor(session);
+
+    await waitFor(() => {
+      const textareas = document.querySelectorAll('table.side-by-side-editor-table textarea');
+      expect(textareas.length).toBe(1);
+    });
+
+    // Should NOT have missing-translation class
+    expect(document.querySelectorAll('.editor-missing-translation').length).toBe(0);
+
+    // Textarea should have the translated text
+    const textarea = document.querySelector('table.side-by-side-editor-table textarea');
+    expect((textarea as HTMLTextAreaElement | null)?.value).toBe('Translated A');
+  });
+
+  it('blur does not trigger API call when translated text has not changed', async () => {
+    const session = makeSessionState({
+      entries: [
+        { key: 'A', source_text: 'Hello', translated_text: 'Translated', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+    await renderEditor(session);
+
+    await waitFor(() => {
+      expect(document.querySelector('table.side-by-side-editor-table textarea')).toBeTruthy();
+    });
+
+    const textarea = document.querySelector('table.side-by-side-editor-table textarea')!;
+
+    // Focus and blur without changing value
+    fireEvent.focus(textarea);
+    fireEvent.blur(textarea);
+
+    // The API should NOT be called since the value hasn't changed
+    expect(mockUpdateSessionEntry).not.toHaveBeenCalled();
+  });
+
+  it('blur triggers API call when translated text has changed', async () => {
+    mockUpdateSessionEntry.mockResolvedValue({
+      translated_text: 'l_english:\n A:0 "New value"\n',
+      entry: { key: 'A', source_text: 'Hello', translated_text: 'New value', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      revision: 1,
+      dirty: true,
+      entries: [
+        { key: 'A', source_text: 'Hello', translated_text: 'New value', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+
+    const session = makeSessionState({
+      entries: [
+        { key: 'A', source_text: 'Hello', translated_text: 'Translated', source_line: 2, translated_line: 2, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+    await renderEditor(session);
+
+    await waitFor(() => {
+      expect(document.querySelector('table.side-by-side-editor-table textarea')).toBeTruthy();
+    });
+
+    const textarea = document.querySelector('table.side-by-side-editor-table textarea')!;
+
+    // Change the value then blur
+    fireEvent.change(textarea, { target: { value: 'New value' } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => {
+      expect(mockUpdateSessionEntry).toHaveBeenCalledWith(
+        'test-file-id',
+        'A',
+        { translated_text: 'New value' },
+      );
+    });
+  });
+
+  it('typing in missing-translation textarea transitions to normal state', async () => {
+    const session = makeSessionState({
+      entries: [
+        { key: 'B', source_text: 'Hello B', translated_text: null, source_line: 2, translated_line: 0, entry_type: 'translation_entry', translatable: true, metadata: {} },
+      ],
+    });
+    await renderEditor(session);
+
+    // Wait for missing-translation state to render
+    await waitFor(() => {
+      expect(document.querySelectorAll('.editor-missing-translation').length).toBe(1);
+    });
+
+    const missingTextarea = document.querySelector('.editor-missing-translation textarea')! as HTMLTextAreaElement;
+
+    // Type into the missing-translation textarea
+    await act(async () => {
+      fireEvent.change(missingTextarea, { target: { value: 'User typed text' } });
+    });
+
+    // After the optimistic update, the entry should now have a value,
+    // so the missing-translation wrapper should be gone and a normal
+    // textarea should show the typed text.
+    await waitFor(() => {
+      expect(document.querySelectorAll('.editor-missing-translation').length).toBe(0);
+      const textareas = document.querySelectorAll('table.side-by-side-editor-table textarea');
+      expect(textareas.length).toBe(1);
+      expect((textareas[0] as HTMLTextAreaElement).value).toBe('User typed text');
+    });
+  });
+});
+
+/* ================================================================== */
+/*  Back Navigation Tests                                               */
+/* ================================================================== */
+
+describe('OutputFileEditor back navigation', () => {
+
+  it('Back button navigates to /translated-files with restoreJobId from location state', async () => {
+    mockLocationState = { jobId: 'my-job-id' };
+    await renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByText('Back')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Back'));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/translated-files',
+        { state: { restoreJobId: 'my-job-id' } },
+      );
+    });
+  });
+
+  it('Back button navigates to /translated-files without state when jobId is not available', async () => {
+    mockLocationState = null;
+    await renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByText('Back')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Back'));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/translated-files',
+        undefined,
+      );
+    });
+  });
+
+  it('Back to Translated Files button in error state navigates with restoreJobId', async () => {
+    mockLocationState = { jobId: 'error-job-id' };
+    mockOpenEditorSession.mockRejectedValue(new Error('Session load failed'));
+
+    const OutputFileEditor = (await import('../OutputFileEditor')).default;
+    render(React.createElement(OutputFileEditor));
+
+    await waitFor(() => {
+      expect(screen.getByText('Back to Translated Files')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Back to Translated Files'));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/translated-files',
+        { state: { restoreJobId: 'error-job-id' } },
+      );
     });
   });
 });

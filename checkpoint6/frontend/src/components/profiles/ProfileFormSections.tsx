@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { GameOption, FileHandlerOption, TranslationOptionsResponse } from '../../api/types';
 import type { ProfileFormModel } from '../../domain';
+import ModelDropdown from '../common/ModelDropdown';
+import RuleSetSelector from '../common/RuleSetSelector';
+import { getLanguageSelectOptions } from '../../utils/languageRegistry';
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -195,6 +198,7 @@ export default function ProfileFormSections({
   const promptOpts = (translationOptions?.prompt_profiles ?? []).map(p => ({ value: p, label: p }));
   const protectionOpts = (translationOptions?.protection_strategies ?? []).map(p => ({ value: p, label: p }));
   const validatorOpts = (translationOptions?.validators ?? []).map(v => ({ value: v, label: v }));
+  const langOpts = getLanguageSelectOptions();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -226,8 +230,8 @@ export default function ProfileFormSections({
 
       {/* Languages */}
       <Section title="Languages">
-        <Field label="Source Language" value={form.srcLang} onChange={v => patch('srcLang', v)} readOnly={readOnly} placeholder="en" />
-        <Field label="Target Language" value={form.dstLang} onChange={v => patch('dstLang', v)} readOnly={readOnly} placeholder="ru" />
+        <Field label="Source Language" value={form.srcLang} onChange={v => patch('srcLang', v)} readOnly={readOnly} type="select" options={langOpts} />
+        <Field label="Target Language" value={form.dstLang} onChange={v => patch('dstLang', v)} readOnly={readOnly} type="select" options={langOpts} />
       </Section>
 
       {/* Runtime */}
@@ -240,7 +244,19 @@ export default function ProfileFormSections({
           type="select"
           options={providerOpts}
         />
-        <Field label="Model" value={form.model} onChange={v => patch('model', v)} readOnly={readOnly} placeholder="gpt-4" mono />
+        <div className="form-group" style={{ marginBottom: '0.4rem' }}>
+          <label style={{ fontSize: '0.7rem', marginBottom: '0.15rem' }}>Model</label>
+          {readOnly ? (
+            <input className="form-control mono" value={form.model} readOnly style={{ fontSize: '0.75rem', padding: '0.25rem 0.4rem' }} />
+          ) : (
+            <ModelDropdown
+              provider={form.provider}
+              value={form.model}
+              onChange={v => patch('model', v)}
+              placeholder="gpt-4"
+            />
+          )}
+        </div>
         <Field label="Temperature" value={form.temperature} onChange={v => patch('temperature', Number(v))} readOnly={readOnly} type="number" />
         <Field label="Batch Size" value={form.batchSize} onChange={v => patch('batchSize', Number(v))} readOnly={readOnly} type="number" />
         <Field label="Use Cache" value={form.useCache} onChange={v => patch('useCache', v === 'true')} readOnly={readOnly} type="checkbox" />
@@ -345,16 +361,27 @@ export default function ProfileFormSections({
       {/* Protection */}
       <Section title="Protection">
         {readOnly ? (
-          <ReadOnlyField label="Protection Strategy" value={form.protectionStrategy} mono />
+          <>
+            <ReadOnlyField label="Protection" value={
+              form.ruleSetIds.length > 0
+                ? `Rule sets: ${form.ruleSetIds.map(id => {
+                    const rs = translationOptions?.rule_sets?.find(r => r.id === id);
+                    return rs?.name ?? id;
+                  }).join(', ')}`
+                : 'None'
+            } mono />
+          </>
         ) : (
-          <Field
-            label="Strategy"
-            value={form.protectionStrategy}
-            onChange={v => patch('protectionStrategy', v)}
-            readOnly={readOnly}
-            type="select"
-            options={protectionOpts}
-          />
+          <>
+            <RuleSetSelector
+              ruleSets={translationOptions?.rule_sets ?? []}
+              selectedIds={form.ruleSetIds}
+              onChange={ids => {
+                patch('ruleSetIds', ids);
+                patch('protectionStrategy', ids.length > 0 ? 'rule_set' : '');
+              }}
+            />
+          </>
         )}
       </Section>
 

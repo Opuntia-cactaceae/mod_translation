@@ -1,7 +1,27 @@
-import type { TranslationOptionsResponse } from '../../api/types';
+import type { ProtectionRuleSet, TranslationOptionsResponse } from '../../api/types';
 import type { JobModel } from '../../domain';
 import { renderConfigValue, type JobConfigFormModel } from '../../domain/jobConfig';
+import { getNestedValue } from '../../domain/configFieldRegistry';
+import RuleSetSelector from '../common/RuleSetSelector';
 import JobDetailField from './JobDetailField';
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function renderRuleSetNames(
+  config: Record<string, unknown>,
+  ruleSets?: ProtectionRuleSet[],
+): string {
+  const ids = getNestedValue(config, 'protection.rule_set_ids') as string[] | undefined;
+  if (!ids || ids.length === 0) {
+    return 'None';
+  }
+  return ids.map(id => {
+    const rs = ruleSets?.find(r => r.id === id);
+    return rs?.name ?? id;
+  }).join(', ');
+}
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -82,15 +102,12 @@ export default function JobConfigSection({
               </select>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Protection Strategy</label>
-              <select
-                className="form-control"
-                value={editConfigForm.protection_strategy ?? ''}
-                onChange={e => onEditConfigFieldChange('protection_strategy', e.target.value)}
-              >
-                <option value="">Default</option>
-                {options?.protection_strategies.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
+              <label>Protection Rule Sets</label>
+              <RuleSetSelector
+                ruleSets={options?.rule_sets ?? []}
+                selectedIds={(editConfigForm.rule_set_ids ?? '').split(',').filter(Boolean)}
+                onChange={ids => onEditConfigFieldChange('rule_set_ids', ids.join(','))}
+              />
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Validator</label>
@@ -124,7 +141,7 @@ export default function JobConfigSection({
             <JobDetailField label="Use Cache" value={renderConfigValue(job.config, 'use_cache')} />
             <JobDetailField label="Save Raw Responses" value={renderConfigValue(job.config, 'save_raw_responses')} />
             <JobDetailField label="Prompt Profile" value={renderConfigValue(job.config, 'prompt.profile_name')} />
-            <JobDetailField label="Protection Strategy" value={renderConfigValue(job.config, 'protection.strategy')} />
+            <JobDetailField label="Protection" value={renderRuleSetNames(job.config ?? {}, options?.rule_sets)} />
             <JobDetailField label="Validator" value={renderConfigValue(job.config, 'validation.validator_name')} />
           </div>
           {(job.status === 'pending' || job.status === 'paused') && (

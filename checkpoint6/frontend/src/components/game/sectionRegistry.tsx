@@ -18,6 +18,14 @@ export interface GameSectionContext {
   lastScanPaths: string[];
   setLastScanPaths: React.Dispatch<React.SetStateAction<string[]>>;
   refreshMods: () => Promise<void>;
+
+  // Lifted discovery scan state — survives section unmount/remount
+  discoveredFiles: string[];
+  setDiscoveredFiles: React.Dispatch<React.SetStateAction<string[]>>;
+  discoveryScanning: boolean;
+  setDiscoveryScanning: React.Dispatch<React.SetStateAction<boolean>>;
+  discoveryScanError: string | null;
+  setDiscoveryScanError: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -65,6 +73,12 @@ export const GAME_SECTIONS: GameSectionDefinition[] = [
       <GenericFileSection
         game={ctx.game}
         handlerOptions={ctx.handlerOptions}
+        scannedFiles={ctx.discoveredFiles}
+        setScannedFiles={ctx.setDiscoveredFiles}
+        scanning={ctx.discoveryScanning}
+        setScanning={ctx.setDiscoveryScanning}
+        scanError={ctx.discoveryScanError}
+        setScanError={ctx.setDiscoveryScanError}
       />
     ),
   },

@@ -30,7 +30,8 @@ interface JobExpandedDetailsProps {
   options?: TranslationOptionsResponse | null;
   savingConfig?: boolean;
   onRevealPath?: (path: string) => void;
-  onOpenEditor?: (path: string) => void;
+  /** Called with output file id to open the new session-based editor. */
+  onOpenEditor?: (outputFileId: string) => void;
 }
 
 /* ------------------------------------------------------------------ */

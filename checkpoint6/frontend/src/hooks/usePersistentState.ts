@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-interface UsePersistentStateOptions {
+interface UsePersistentStateOptions<T> {
   /**
    * Legacy key names to check during initialisation.
    * If the new key has no data but a legacy key does,
@@ -8,6 +8,11 @@ interface UsePersistentStateOptions {
    * and the legacy key will be removed.
    */
   legacyKeys?: string[];
+  /**
+   * Transform the value during migration from a legacy key.
+   * Useful when the value format has changed (e.g. adding prefixes to keys).
+   */
+  migrateLegacy?: (old: T) => T;
 }
 
 /**
@@ -24,7 +29,7 @@ interface UsePersistentStateOptions {
 export function usePersistentState<T>(
   key: string,
   defaultValue: T,
-  options?: UsePersistentStateOptions,
+  options?: UsePersistentStateOptions<T>,
 ): [T, React.Dispatch<React.SetStateAction<T>>, () => void] {
   const [value, setValue] = useState<T>(() => {
     try {
@@ -39,10 +44,11 @@ export function usePersistentState<T>(
           const legacyRaw = localStorage.getItem(legacyKey);
           if (legacyRaw !== null) {
             const parsed = JSON.parse(legacyRaw) as T;
+            const migrated = options.migrateLegacy ? options.migrateLegacy(parsed) : parsed;
             // Migrate: write to new key, remove legacy
-            localStorage.setItem(key, JSON.stringify(parsed));
+            localStorage.setItem(key, JSON.stringify(migrated));
             localStorage.removeItem(legacyKey);
-            return parsed;
+            return migrated;
           }
         }
       }

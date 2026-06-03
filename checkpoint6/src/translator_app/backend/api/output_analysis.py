@@ -15,6 +15,7 @@ from translator_app.backend.schemas.output_files import (
 )
 from translator_app.outputs.analysis.models import (
     BatchAnalysisRequest,
+    OutputAnalysisOptions,
     OutputFileAnalysisResult,
 )
 
@@ -80,10 +81,17 @@ def analyze_output_file(
     checks = body.checks if body and body.checks else ["compilability", "placeholders"]
     save = body.save if body else True
 
+    options = None
+    if body and body.protection_profile_id:
+        options = OutputAnalysisOptions(
+            protection_profile_id=body.protection_profile_id,
+        )
+
     result = svcs.output_analysis.analyze_file(
         output_file_id=output_file_id,
         checks=checks,
         save=save,
+        options=options,
     )
     return _result_to_response(result)
 
@@ -151,6 +159,7 @@ def analyze_output_files_batch(
         checks=body.checks,
         save=body.save,
         only_stale=body.only_stale,
+        protection_profile_id=body.protection_profile_id,
     )
 
     batch_result = svcs.output_analysis.analyze_batch(request)

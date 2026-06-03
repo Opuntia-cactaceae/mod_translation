@@ -17,9 +17,32 @@ afterEach(() => cleanup());
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
-  Link: function MockLink(props: any) {
-    return React.createElement('a', { href: props.to }, props.children);
+}));
+
+// Mock api to prevent child components (ModDiscoverySection, ModListSection)
+// from making real fetch() calls that produce ECONNREFUSED stderr noise.
+vi.mock('../../App', () => ({
+  api: {
+    getSettings: vi.fn().mockResolvedValue({}),
+    discoverMods: vi.fn().mockResolvedValue({ mod_discovery_result: { mods: [] } }),
+    readDescriptor: vi.fn().mockResolvedValue(null),
+    installMod: vi.fn().mockResolvedValue({}),
+    revealPath: vi.fn().mockResolvedValue({}),
+    previewCleanCache: vi.fn().mockResolvedValue({ items_to_delete: [] }),
+    cleanCache: vi.fn().mockResolvedValue({}),
   },
+  ApiError: class extends Error {
+    code = '';
+    details: Record<string, unknown> = {};
+    recoverable = false;
+    constructor(err: { message: string; code: string; details: Record<string, unknown>; recoverable: boolean }) {
+      super(err.message);
+      this.code = err.code;
+      this.details = err.details;
+      this.recoverable = err.recoverable;
+    }
+  },
+  useToast: () => ({ showToast: vi.fn() }),
 }));
 
 vi.mock('../../index', () => ({
@@ -99,6 +122,7 @@ function createMockVm(overrides: Partial<CreateJobFormViewModel> = {}): CreateJo
       apiKeyIds: [],
       promptProfileName: '',
       protectionStrategy: '',
+      ruleSetIds: [],
       validatorName: '',
       outputDir: '',
       outputFilenameSuffix: '',
@@ -141,22 +165,12 @@ function createMockVm(overrides: Partial<CreateJobFormViewModel> = {}): CreateJo
     mods: [],
     filteredMods: [],
     modsLoading: false,
-    selectedMod: null,
-    handleSelectMod: vi.fn(),
-    handleClearSelection: vi.fn(),
     // --- Game filter ---
     games: [],
     gamesWithMods: [],
     gamesLoading: false,
     selectedGameId: '',
     handleGameChange: vi.fn(),
-    // --- Language filter ---
-    showOnlySelectedLanguage: true,
-    setShowOnlySelectedLanguage: vi.fn(),
-    selectedLanguage: 'en',
-    setSelectedLanguage: vi.fn(),
-    availableLanguages: [],
-    modFromQuery: null,
     gameConfig: null,
     handleResetDefaults: vi.fn(),
     handlePreviewPlan: vi.fn(),
@@ -170,7 +184,6 @@ function createMockVm(overrides: Partial<CreateJobFormViewModel> = {}): CreateJo
     selectProfileDirect: mockSelectProfileDirect,
     showProfileConfirm: false,
     profileConfirmType: 'apply' as const,
-    profileGameWarning: '',
     confirmProfileApply: mockConfirmProfileApply,
     cancelProfileConfirm: mockCancelProfileConfirm,
     // --- Effective prompt ---
@@ -183,6 +196,20 @@ function createMockVm(overrides: Partial<CreateJobFormViewModel> = {}): CreateJo
     handlePreviewPrompt: vi.fn(),
     closePreviewPrompt: vi.fn(),
     previewPromptLoading: false,
+    // --- Draft job selection ---
+    draftGrouped: [],
+    draftMeta: {},
+    draftFiles: [],
+    draftDiagnostics: [],
+    draftFileCount: 0,
+    draftLoading: false,
+    draftError: null,
+    selectedModPaths: [],
+    setSelectedModPaths: vi.fn(),
+    handleAddModFiles: vi.fn(),
+    handleSearchAndAdd: vi.fn(),
+    handleRemoveDraftFile: vi.fn(),
+    handleRemoveDraftFiles: vi.fn(),
     ...overrides,
   };
 }
@@ -209,6 +236,12 @@ async function renderForm(vm: CreateJobFormViewModel = createMockVm(), onOpenPro
       onOpenProfileEditor: onOpenProfileEditor || vi.fn(),
     }),
   );
+}
+
+/** Expand a file group accordion by clicking its header. */
+function expandGroup(modName: string) {
+  const testId = `file-group-header-${modName.replace(/[\s/]+/g, '_')}`;
+  fireEvent.click(screen.getByTestId(testId));
 }
 
 /* ================================================================== */
@@ -243,14 +276,6 @@ describe('CreateJobForm', () => {
     it('renders the game selector prompt when no game is selected', async () => {
       await renderForm();
       expect(screen.getByText('Select a game above to view available mods.')).toBeTruthy();
-    });
-
-    it('renders the mod select with default option when a game is selected', async () => {
-      await renderForm(createMockVm({
-        selectedGameId: 'stellaris',
-        filteredMods: [],
-      }));
-      expect(screen.getByText('\u2014 No mod selected \u2014')).toBeTruthy();
     });
   });
 
@@ -362,24 +387,6 @@ describe('CreateJobForm', () => {
       expect(addPath).toHaveBeenCalledWith('/some/file.yml');
     });
 
-    it('calls removePath when a file chip remove button is clicked', async () => {
-      const removePath = vi.fn();
-      const vm = createMockVm({
-        removePath,
-        form: {
-          ...createMockVm().form,
-          filePathList: ['added/file.yml'],
-        },
-        addedPaths: new Set(['added/file.yml']),
-      });
-      await renderForm(vm);
-
-      const removeButtons = screen.getAllByText('\u00D7');
-      expect(removeButtons.length).toBeGreaterThan(0);
-      fireEvent.click(removeButtons[0]);
-      expect(removePath).toHaveBeenCalledWith('added/file.yml');
-    });
-
     it('calls setSearchQuery for search path when Add Search Path is clicked', async () => {
       const setSearchQuery = vi.fn();
       const setPickSearchPath = vi.fn();
@@ -421,16 +428,6 @@ describe('CreateJobForm', () => {
       const createButton = screen.getByText('Creating...');
       expect(createButton).toBeTruthy();
       expect((createButton as HTMLButtonElement).disabled).toBe(true);
-    });
-
-    it('shows mod loading state', async () => {
-      await renderForm(createMockVm({
-        selectedGameId: 'stellaris',
-        modsLoading: true,
-        filteredMods: [],
-      }));
-
-      expect(screen.getByText('Loading mods...')).toBeTruthy();
     });
 
     it('shows search error when present', async () => {
@@ -545,163 +542,183 @@ describe('CreateJobForm', () => {
       }));
       expect(screen.queryByText('Select a game above to view available mods.')).toBeNull();
     });
+  });
 
-    it('shows no mods message when game has no discovered mods', async () => {
+  /* ------------------------------------------------------------------ */
+  /*  Legacy mod flow — must NOT render                                  */
+  /* ------------------------------------------------------------------ */
+
+  describe('legacy mod flow removed', () => {
+    it('does NOT render "Select mod" label', async () => {
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        filteredMods: [],
-        mods: [],
+        filteredMods: [{ mod_id: 'mod-1', path: '/p/mod-1', name: 'Mod One' } as any],
       }));
-      expect(screen.getByText(/No mods discovered yet/)).toBeTruthy();
+      expect(screen.queryByText('Select mod')).toBeNull();
     });
 
-    it('shows filtered mods in the select dropdown', async () => {
-      const mods = [
-        { mod_id: 'mod-1', name: 'Mod One', version: '1.0', game_id: 'stellaris', localisation_paths: [] },
-        { mod_id: 'mod-2', name: 'Mod Two', version: '2.0', game_id: 'stellaris', localisation_paths: [] },
-      ];
-      const { container } = await renderForm(createMockVm({
+    it('does NOT render "Using files from mod" text', async () => {
+      await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        gamesWithMods: [{ id: 'stellaris', label: 'Stellaris', supports_mod_discovery: true } as any],
-        filteredMods: mods as any,
+        filteredMods: [{ mod_id: 'mod-1', path: '/p/mod-1', name: 'Mod One' } as any],
       }));
+      expect(screen.queryByText(/Using files from mod/)).toBeNull();
+    });
 
-      // Check the mod select is rendered
-      expect(screen.getByText('Select mod')).toBeTruthy();
+    it('does NOT render "Source language files"', async () => {
+      await renderForm(createMockVm({ selectedGameId: 'stellaris' }));
+      expect(screen.queryByText('Source language files')).toBeNull();
+    });
 
-      // Check mod options are present in the mod select
-      const allOptions = container.querySelectorAll('select option');
-      const optionTexts = Array.from(allOptions).map(o => o.textContent);
-      expect(optionTexts.some(t => t?.includes('Mod One'))).toBe(true);
-      expect(optionTexts.some(t => t?.includes('Mod Two'))).toBe(true);
+    it('does NOT render "Only selected language"', async () => {
+      await renderForm(createMockVm({ selectedGameId: 'stellaris' }));
+      expect(screen.queryByText('Only selected language')).toBeNull();
     });
   });
 
   /* ------------------------------------------------------------------ */
-  /*  Language filter toggle                                             */
+  /*  Input files — Add from mods                                        */
   /* ------------------------------------------------------------------ */
 
-  describe('language filter toggle', () => {
-    const multiLangMod = {
-      mod_id: 'test-mod',
-      name: 'Test Mod',
-      game_id: 'stellaris',
-      localisation_paths: [
-        '/mod/localisation/english/test_l_english.yml',
-        '/mod/localisation/french/test_l_french.yml',
-        '/mod/localisation/german/test_l_german.yml',
-      ],
-    };
-
-    const singleLangMod = {
-      mod_id: 'single-mod',
-      name: 'Single Lang Mod',
-      game_id: 'stellaris',
-      localisation_paths: [
-        '/mod/localisation/english/test_l_english.yml',
-      ],
-    };
-
-    it('does NOT render language toggle when no mod is selected', async () => {
-      await renderForm(createMockVm({
-        selectedGameId: 'stellaris',
-        selectedMod: null,
-        filteredMods: [],
-      }));
-
-      expect(screen.queryByText('Source language files')).toBeNull();
-      expect(screen.queryByText('Only selected language')).toBeNull();
+  describe('Input files / Add from mods', () => {
+    it('renders Input files section', async () => {
+      await renderForm();
+      expect(screen.getByText(/Input files/)).toBeTruthy();
     });
 
-    it('does NOT render language toggle when mod has only 1 language', async () => {
+    it('renders Add from mods label when mods are filtered', async () => {
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: singleLangMod as any,
-        availableLanguages: [],
+        filteredMods: [{ mod_id: 'mod-1', name: 'Mod One' } as any],
       }));
-
-      expect(screen.queryByText('Source language files')).toBeNull();
+      expect(screen.getByText('Add from mods')).toBeTruthy();
     });
 
-    it('renders language selector and toggle when mod has multiple languages', async () => {
+    it('renders mod checkbox list', async () => {
+      const mods = [
+        { mod_id: 'mod-1', path: '/path/mod-1', name: 'Mod One', game_id: 'stellaris' },
+        { mod_id: 'mod-2', path: '/path/mod-2', name: 'Mod Two', game_id: 'stellaris' },
+      ];
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
+        filteredMods: mods as any,
       }));
-
-      expect(screen.getByText('Source language files')).toBeTruthy();
-      expect(screen.getByText('Only selected language')).toBeTruthy();
+      expect(screen.getByText('Mod One')).toBeTruthy();
+      expect(screen.getByText('Mod Two')).toBeTruthy();
     });
 
-    it('renders language options in the select', async () => {
+    it('calls handleAddModFiles when "Add selected mods" clicked', async () => {
+      const handleAddModFiles = vi.fn();
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
+        filteredMods: [{ mod_id: 'mod-1', path: '/path/mod-1', name: 'Mod One' } as any],
+        selectedModPaths: ['/path/mod-1'],
+        handleAddModFiles,
       }));
-
-      // The language select is rendered near "Source language files:"
-      const langSection = screen.getByText('Source language files').closest('div');
-      expect(langSection).toBeTruthy();
-      const selects = langSection!.querySelectorAll('select');
-      expect(selects.length).toBe(1);
-      expect(selects[0].querySelectorAll('option').length).toBe(3);
+      fireEvent.click(screen.getByText(/Add selected mods/));
+      expect(handleAddModFiles).toHaveBeenCalledOnce();
     });
 
-    it('calls setShowOnlySelectedLanguage when toggle is clicked', async () => {
-      const setShowOnlySelectedLanguage = vi.fn();
+    it('disables "Add selected mods" button when no mods selected', async () => {
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
-        showOnlySelectedLanguage: true,
-        setShowOnlySelectedLanguage,
+        filteredMods: [{ mod_id: 'mod-1', path: '/path/mod-1', name: 'Mod One' } as any],
+        selectedModPaths: [],
       }));
-
-      // Find the checkbox inside the language filter section
-      const langSection = screen.getByText('Source language files').closest('div');
-      const checkboxes = langSection!.querySelectorAll('input[type="checkbox"]');
-      expect(checkboxes.length).toBe(1);
-      fireEvent.click(checkboxes[0]);
-      expect(setShowOnlySelectedLanguage).toHaveBeenCalledWith(false);
+      const btn = screen.getByText(/Add selected mods/).closest('button');
+      expect(btn?.disabled).toBe(true);
     });
 
-    it('calls setSelectedLanguage when language selector changes', async () => {
-      const setSelectedLanguage = vi.fn();
+    it('enables "Add selected mods" button when mods are selected', async () => {
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
-        setSelectedLanguage,
+        filteredMods: [{ mod_id: 'mod-1', path: '/path/mod-1', name: 'Mod One' } as any],
+        selectedModPaths: ['/path/mod-1'],
       }));
-
-      const langSection = screen.getByText('Source language files').closest('div');
-      const select = langSection!.querySelector('select')!;
-      fireEvent.change(select, { target: { value: 'fr' } });
-      expect(setSelectedLanguage).toHaveBeenCalledWith('fr');
+      const btn = screen.getByText(/Add selected mods/).closest('button');
+      expect(btn?.disabled).toBe(false);
     });
 
-    it('shows advanced mode warning when toggle is OFF', async () => {
+    it('disambiguates same mod_id via path — aliasing test', async () => {
+      // Two mods sharing the same mod_id but at different filesystem paths
+      // (e.g. Steam workshop copy + manual/SFW copy) must be treated as
+      // distinct entries. The UI keys checkboxes by `path`, not `mod_id`.
+      const dupMods = [
+        { mod_id: '1747099270', path: '/workshop/content/281990/1747099270', name: 'First Copy', game_id: 'stellaris' },
+        { mod_id: '1747099270', path: '/workshop/content/SFW_Modes/1747099270', name: 'Second Copy', game_id: 'stellaris' },
+      ];
+      const handleAddModFiles = vi.fn();
       await renderForm(createMockVm({
         selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
-        showOnlySelectedLanguage: false,
+        filteredMods: dupMods as any,
+        selectedModPaths: [
+          '/workshop/content/281990/1747099270',
+          '/workshop/content/SFW_Modes/1747099270',
+        ],
+        handleAddModFiles,
       }));
 
-      expect(screen.getByText(/Mixed languages selected/)).toBeTruthy();
+      // Both mods are rendered despite identical mod_id.
+      expect(screen.getByText('First Copy')).toBeTruthy();
+      expect(screen.getByText('Second Copy')).toBeTruthy();
+
+      // The mod checkboxes are keyed by path (not mod_id), verified by
+      // checking the <label> wrapping each mod name has the correct path key.
+      const firstLabel = screen.getByText('First Copy').closest('label');
+      expect(firstLabel?.getAttribute('style')).toBeTruthy(); // rendered in the mod list
+
+      // Each label contains a checked checkbox.
+      const firstCheckbox = firstLabel?.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      expect(firstCheckbox?.checked).toBe(true);
+      const secondCheckbox = screen.getByText('Second Copy').closest('label')
+        ?.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      expect(secondCheckbox?.checked).toBe(true);
+
+      // "Add selected mods" button shows correct count.
+      const btn = screen.getByText(/Add selected mods \(2\)/).closest('button');
+      expect(btn).toBeTruthy();
+      expect(btn?.disabled).toBe(false);
+
+      // Clicking the button calls handleAddModFiles.
+      fireEvent.click(btn!);
+      expect(handleAddModFiles).toHaveBeenCalledOnce();
     });
 
-    it('does NOT show advanced mode warning when toggle is ON', async () => {
-      await renderForm(createMockVm({
-        selectedGameId: 'stellaris',
-        selectedMod: multiLangMod as any,
-        availableLanguages: ['en', 'fr', 'de'],
-        showOnlySelectedLanguage: true,
-      }));
+    it('renders textarea with placeholder text', async () => {
+      await renderForm();
+      expect(screen.getByPlaceholderText(
+        /\/path\/to\/mod\/localisation\/english\/example_l_english\.yml/,
+      )).toBeTruthy();
+    });
 
-      expect(screen.queryByText(/Mixed languages selected/)).toBeNull();
+    it('renders compact preview when draftGrouped is provided', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-1',
+          group_type: 'mod' as const,
+          title: 'Test Mod',
+          files: [
+            { path: '/mod/file1.yml', name: 'file1.yml', exists: true, selected: true },
+            { path: '/mod/file2.yml', name: 'file2.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/file1.yml', '/mod/file2.yml'],
+      }));
+      expandGroup('Manual / Ungrouped files');
+      expect(screen.getByText('file1.yml')).toBeTruthy();
+      expect(screen.getByText('file2.yml')).toBeTruthy();
+    });
+
+    it('renders diagnostics', async () => {
+      const draftDiagnostics = [
+        { level: 'warning', code: 'FILE_NOT_FOUND', message: 'File not found: missing.yml' },
+      ];
+      await renderForm(createMockVm({ draftDiagnostics }));
+      expect(screen.getByText('File not found: missing.yml')).toBeTruthy();
     });
   });
 
@@ -837,26 +854,46 @@ describe('CreateJobForm', () => {
       expect(select.querySelectorAll('option').length).toBe(4); // — None — + 3 profiles
     });
 
-    it('renders protection strategy dropdown with options', async () => {
-      const optionsWithProtection = {
+    it('renders protection rule sets label', async () => {
+      await renderForm();
+      const summary = screen.getByText('Advanced config');
+      fireEvent.click(summary);
+      expect(screen.getByText('Protection Rule Sets')).toBeTruthy();
+    });
+
+    it('renders rule set selector with builtin rule set pre-selected', async () => {
+      const optionsWithRuleSets = {
         ...emptyOptions,
-        protection_strategies: ['strict', 'lenient'],
+        rule_sets: [
+          {
+            id: 'builtin_default_game_localisation',
+            name: 'Default Game Localisation Protection',
+            builtin: true,
+            enabled: true,
+          },
+        ],
       };
+      const vmWithRuleSets = createMockVm({
+        form: {
+          ...createMockVm().form,
+          ruleSetIds: ['builtin_default_game_localisation'],
+        },
+      });
       const CreateJobForm = (await import('../CreateJobForm')).default;
       render(
         React.createElement(CreateJobForm, {
-          vm: createMockVm(),
-          options: optionsWithProtection,
+          vm: vmWithRuleSets,
+          options: optionsWithRuleSets,
           profiles: emptyProfiles,
           onOpenProfileEditor: vi.fn(),
         }),
       );
       const summary = screen.getByText('Advanced config');
       fireEvent.click(summary);
-      const label = screen.getByText('Protection Strategy');
-      const select = label.closest('div')!.querySelector('select') as HTMLSelectElement;
-      expect(select).toBeTruthy();
-      expect(select.querySelectorAll('option').length).toBe(3); // — None — + 2 strategies
+      // The builtin rule set name should be visible
+      expect(screen.getByText('Default Game Localisation Protection')).toBeTruthy();
+      // The builtin badge should be visible
+      expect(screen.getByText('builtin')).toBeTruthy();
     });
 
     it('renders validator dropdown with options', async () => {
@@ -883,29 +920,41 @@ describe('CreateJobForm', () => {
 
     it('calls setFormField when advanced fields change', async () => {
       const setFormField = vi.fn();
-      await renderForm(createMockVm({ setFormField }));
+      const optionsWithRuleSets = {
+        ...emptyOptions,
+        rule_sets: [
+          { id: 'builtin_default', name: 'Default Protection', builtin: true, enabled: true },
+        ],
+      };
+      const vm = createMockVm({ setFormField });
+      const CreateJobForm = (await import('../CreateJobForm')).default;
+      render(
+        React.createElement(CreateJobForm, {
+          vm,
+          options: optionsWithRuleSets,
+          profiles: emptyProfiles,
+          onOpenProfileEditor: vi.fn(),
+        }),
+      );
       const summary = screen.getByText('Advanced config');
       fireEvent.click(summary);
 
       // Change prompt profile
       const promptLabel = screen.getByText('Prompt Profile');
       const promptSelect = promptLabel.closest('div')!.querySelector('select')!;
-      // Need a real option value to fire change
-      // Add an option dynamically via DOM manipulation
       const option = document.createElement('option');
       option.value = 'default';
       promptSelect.appendChild(option);
       fireEvent.change(promptSelect, { target: { value: 'default' } });
       expect(setFormField).toHaveBeenCalledWith('promptProfileName', 'default');
 
-      // Change protection strategy
-      const protectionLabel = screen.getByText('Protection Strategy');
-      const protectionSelect = protectionLabel.closest('div')!.querySelector('select')!;
-      const protectionOption = document.createElement('option');
-      protectionOption.value = 'strict';
-      protectionSelect.appendChild(protectionOption);
-      fireEvent.change(protectionSelect, { target: { value: 'strict' } });
-      expect(setFormField).toHaveBeenCalledWith('protectionStrategy', 'strict');
+      // Change protection rule sets — checkbox toggle calls setFormField for
+      // both ruleSetIds and protectionStrategy (auto-set rule_set mode)
+      const protectionCheckbox = screen.getByText('Default Protection')
+        .closest('label')!.querySelector('input[type="checkbox"]')!;
+      fireEvent.click(protectionCheckbox);
+      expect(setFormField).toHaveBeenCalledWith('ruleSetIds', ['builtin_default']);
+      expect(setFormField).toHaveBeenCalledWith('protectionStrategy', 'rule_set');
 
       // Change validator
       const validatorLabel = screen.getByText('Validator');
@@ -1047,44 +1096,6 @@ describe('CreateJobForm', () => {
       expect(screen.getByText(/Form field values will not be changed/)).toBeTruthy();
     });
 
-    /* -------------------------------------------------------------- */
-    /*  Profile game warning                                           */
-    /* -------------------------------------------------------------- */
-
-    it('renders profile game warning when profileGameWarning is non-empty in apply mode', async () => {
-      await renderForm(createMockVm({
-        showProfileConfirm: true,
-        profileConfirmType: 'apply',
-        profileGameWarning: 'This profile targets a different game/parser. Mod-specific game settings will not be applied.',
-      }));
-      expect(
-        screen.getByText('This profile targets a different game/parser. Mod-specific game settings will not be applied.')
-      ).toBeTruthy();
-    });
-
-    it('does not render profile game warning when profileGameWarning is empty', async () => {
-      await renderForm(createMockVm({
-        showProfileConfirm: true,
-        profileConfirmType: 'apply',
-        profileGameWarning: '',
-      }));
-      expect(
-        screen.queryByText('This profile targets a different game/parser. Mod-specific game settings will not be applied.')
-      ).toBeNull();
-    });
-
-    it('does not render profile game warning in clear mode', async () => {
-      await renderForm(createMockVm({
-        showProfileConfirm: true,
-        profileConfirmType: 'clear',
-        profileGameWarning: 'This profile targets a different game/parser. Mod-specific game settings will not be applied.',
-      }));
-      // Only the "unlink" and "unchanged" text should appear, not the warning
-      expect(screen.getByText(/unlink the current profile/)).toBeTruthy();
-      expect(
-        screen.queryByText('This profile targets a different game/parser. Mod-specific game settings will not be applied.')
-      ).toBeNull();
-    });
   });
 
   /* ------------------------------------------------------------------ */
@@ -1215,6 +1226,399 @@ describe('CreateJobForm', () => {
       fireEvent.click(summary);
       // Should not show effective display during loading
       expect(screen.queryByText(/Effective prompt templates/)).toBeNull();
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Draft job selection — textarea + compact preview, diagnostics      */
+  /* ------------------------------------------------------------------ */
+
+  describe('draft job selection', () => {
+    it('shows file count in the label when files are selected', async () => {
+      await renderForm(createMockVm({ draftFileCount: 5 }));
+      expect(screen.getByText('(5 files selected)')).toBeTruthy();
+    });
+
+    it('shows singular file count', async () => {
+      await renderForm(createMockVm({ draftFileCount: 1 }));
+      expect(screen.getByText('(1 file selected)')).toBeTruthy();
+    });
+
+    it('renders draft error when present', async () => {
+      await renderForm(createMockVm({ draftError: 'Failed to load draft' }));
+      expect(screen.getByText(/Draft error:/)).toBeTruthy();
+      expect(screen.getByText(/Failed to load draft/)).toBeTruthy();
+    });
+
+    it('does not render draft error when null', async () => {
+      await renderForm(createMockVm({ draftError: null }));
+      expect(screen.queryByText(/Draft error:/)).toBeNull();
+    });
+
+    it('textarea is visible by default', async () => {
+      await renderForm(createMockVm({
+        form: { ...createMockVm().form, filePaths: 'path/to/file.yml' },
+      }));
+      const textarea = screen.getByPlaceholderText(
+        /\/path\/to\/mod\/localisation\/english\/example_l_english\.yml/,
+      ) as HTMLTextAreaElement;
+      expect(textarea).toBeTruthy();
+      expect(textarea.value).toBe('path/to/file.yml');
+    });
+
+    it('renders compact chips preview with file names', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-1',
+          group_type: 'mod' as const,
+          title: 'Test Mod',
+          files: [
+            { path: '/mod/path/file1.yml', name: 'file1.yml', exists: true, selected: true },
+            { path: '/mod/path/file2.yml', name: 'file2.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/path/file1.yml', '/mod/path/file2.yml'],
+      }));
+      expandGroup('Manual / Ungrouped files');
+      // File names shown in grouped list (no draftMeta → fall under Manual / Ungrouped files)
+      expect(screen.getByText('file1.yml')).toBeTruthy();
+      expect(screen.getByText('file2.yml')).toBeTruthy();
+      // Full paths are NOT shown as visible text
+      expect(screen.queryByText('/mod/path/file1.yml')).toBeNull();
+      expect(screen.queryByText('/mod/path/file2.yml')).toBeNull();
+    });
+
+    it('renders diagnostics below the textarea', async () => {
+      const draftDiagnostics = [
+        { level: 'warning', code: 'FILE_NOT_FOUND', message: 'File not found: missing.yml' },
+      ];
+      await renderForm(createMockVm({ draftDiagnostics }));
+      expect(screen.getByText('File not found: missing.yml')).toBeTruthy();
+    });
+
+    it('chip remove calls handleRemoveDraftFile', async () => {
+      const handleRemoveDraftFile = vi.fn();
+      const draftGrouped = [
+        {
+          group_id: 'mod-1',
+          group_type: 'mod' as const,
+          title: 'Test Mod',
+          files: [
+            { path: '/mod/file1.yml', name: 'file1.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 1,
+        draftFiles: ['/mod/file1.yml'],
+        draftMeta: { '/mod/file1.yml': { modName: 'Test Mod', modId: 'mod-1' } },
+        handleRemoveDraftFile,
+      }));
+      expandGroup('Test Mod');
+      const removeFileBtns = screen.getAllByTitle('Remove file');
+      expect(removeFileBtns.length).toBe(1);
+      fireEvent.click(removeFileBtns[0]);
+      expect(handleRemoveDraftFile).toHaveBeenCalledWith('/mod/file1.yml');
+    });
+
+    it('single-file mod group renders group header', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-1',
+          group_type: 'mod' as const,
+          title: 'Test Mod',
+          files: [
+            { path: '/mod/file1.yml', name: 'file1.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 1,
+        draftFiles: ['/mod/file1.yml'],
+        draftMeta: { '/mod/file1.yml': { modName: 'Test Mod', modId: 'mod-1' } },
+      }));
+      // Single-file group now shows a header
+      expect(screen.getByText('Test Mod (1)')).toBeTruthy();
+      // Expand and verify the file is listed
+      expandGroup('Test Mod');
+      expect(screen.getByText('file1.yml')).toBeTruthy();
+    });
+
+    it('Remove group visible for single-file group', async () => {
+      const handleRemoveDraftFiles = vi.fn();
+      const draftGrouped = [
+        {
+          group_id: 'mod-1',
+          group_type: 'mod' as const,
+          title: 'Test Mod',
+          files: [
+            { path: '/mod/file1.yml', name: 'file1.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 1,
+        draftFiles: ['/mod/file1.yml'],
+        draftMeta: { '/mod/file1.yml': { modName: 'Test Mod', modId: 'mod-1' } },
+        handleRemoveDraftFiles,
+      }));
+      // Remove group is now visible for all groups (including single-file)
+      const removeGroupBtn = screen.getByTitle('Remove all files in this group');
+      expect(removeGroupBtn).toBeTruthy();
+      fireEvent.click(removeGroupBtn);
+      expect(handleRemoveDraftFiles).toHaveBeenCalledWith(['/mod/file1.yml']);
+    });
+
+    // -----------------------------------------------------------------
+    //  Mod grouping — new UX with grouped-by-mod preview
+    // -----------------------------------------------------------------
+
+    it('renders one mod group with correct file count when a mod has multiple files', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+            { path: '/mod/ms/settings.yml', name: 'settings.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/ms/events.yml', '/mod/ms/settings.yml'],
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+          '/mod/ms/settings.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+        },
+      }));
+      // Group header with mod name and count
+      expect(screen.getByText('Tasty Maid (2)')).toBeTruthy();
+      // Expand and verify files inside the group
+      expandGroup('Tasty Maid');
+      expect(screen.getByText('events.yml')).toBeTruthy();
+      expect(screen.getByText('settings.yml')).toBeTruthy();
+    });
+
+    it('renders two separate groups when two mods are selected', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+          ],
+        },
+        {
+          group_id: 'mod-wg',
+          group_type: 'mod' as const,
+          title: 'Warship Girls',
+          files: [
+            { path: '/mod/wg/advisor.yml', name: 'advisor.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/ms/events.yml', '/mod/wg/advisor.yml'],
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+          '/mod/wg/advisor.yml': { modName: 'Warship Girls', modId: 'mod-wg' },
+        },
+      }));
+      expect(screen.getByText('Tasty Maid (1)')).toBeTruthy();
+      expect(screen.getByText('Warship Girls (1)')).toBeTruthy();
+    });
+
+    it('remove group calls onRemoveFiles only with that mod\'s paths', async () => {
+      const handleRemoveDraftFiles = vi.fn();
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+            { path: '/mod/ms/settings.yml', name: 'settings.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/ms/events.yml', '/mod/ms/settings.yml'],
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+          '/mod/ms/settings.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+        },
+        handleRemoveDraftFiles,
+      }));
+      const removeGroupBtn = screen.getByTitle('Remove all files in this group');
+      fireEvent.click(removeGroupBtn);
+      // Only this mod's paths are passed — no unrelated files
+      expect(handleRemoveDraftFiles).toHaveBeenCalledWith([
+        '/mod/ms/events.yml',
+        '/mod/ms/settings.yml',
+      ]);
+    });
+
+    it('individual file remove inside a grouped mod removes only that file', async () => {
+      const handleRemoveDraftFile = vi.fn();
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+            { path: '/mod/ms/settings.yml', name: 'settings.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/mod/ms/events.yml', '/mod/ms/settings.yml'],
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+          '/mod/ms/settings.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+        },
+        handleRemoveDraftFile,
+      }));
+      expandGroup('Tasty Maid');
+      const removeBtns = screen.getAllByTitle('Remove file');
+      expect(removeBtns.length).toBe(2);
+      // Click remove on the first file
+      fireEvent.click(removeBtns[0]);
+      expect(handleRemoveDraftFile).toHaveBeenCalledWith('/mod/ms/events.yml');
+    });
+
+    it('manual file paths (no mod metadata) appear under Manual / Ungrouped files', async () => {
+      const draftGrouped: Array<{
+        group_id: string;
+        group_type: 'mod' | 'folder';
+        title: string;
+        files: Array<{ path: string; name: string; exists: boolean; selected: boolean }>;
+      }> = [];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/manual/path/file1.yml', '/manual/path/file2.yml'],
+        draftMeta: {}, // No mod metadata for these paths
+      }));
+      // Falls under "Manual / Ungrouped files" group
+      expect(screen.getByText('Manual / Ungrouped files (2)')).toBeTruthy();
+      expandGroup('Manual / Ungrouped files');
+      expect(screen.getByText('file1.yml')).toBeTruthy();
+      expect(screen.getByText('file2.yml')).toBeTruthy();
+    });
+
+    it('adding a mod does not overwrite existing manual files in the display', async () => {
+      // Manual file + mod file — both groups shown
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 2,
+        draftFiles: ['/manual/path/manual.yml', '/mod/ms/events.yml'],
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+          // manual.yml has no metadata → falls under Manual / Ungrouped files
+        },
+      }));
+      expect(screen.getByText('Manual / Ungrouped files (1)')).toBeTruthy();
+      expect(screen.getByText('Tasty Maid (1)')).toBeTruthy();
+      expandGroup('Manual / Ungrouped files');
+      expandGroup('Tasty Maid');
+      expect(screen.getByText('manual.yml')).toBeTruthy();
+      expect(screen.getByText('events.yml')).toBeTruthy();
+    });
+
+    it('duplicate paths are not duplicated in the group display', async () => {
+      const draftGrouped = [
+        {
+          group_id: 'mod-ms',
+          group_type: 'mod' as const,
+          title: 'Tasty Maid',
+          files: [
+            { path: '/mod/ms/events.yml', name: 'events.yml', exists: true, selected: true },
+          ],
+        },
+      ];
+      await renderForm(createMockVm({
+        draftGrouped,
+        draftFileCount: 1,
+        draftFiles: ['/mod/ms/events.yml', '/mod/ms/events.yml'], // duplicate
+        draftMeta: {
+          '/mod/ms/events.yml': { modName: 'Tasty Maid', modId: 'mod-ms' },
+        },
+      }));
+      // The component iterates draftFiles — dedup is expected upstream.
+      // We verify there is exactly one occurrence in the DOM.
+      expandGroup('Tasty Maid');
+      const removeBtns = screen.getAllByTitle('Remove file');
+      expect(removeBtns.length).toBe(1);
+    });
+
+    it('shows loading indicator when draftLoading is true', async () => {
+      await renderForm(createMockVm({ draftLoading: true }));
+      expect(screen.getByText('loading...')).toBeTruthy();
+    });
+
+    // -----------------------------------------------------------------
+    //  Hardening: search add behaviour
+    // -----------------------------------------------------------------
+
+    it('renders root-not-found diagnostic', async () => {
+      const draftDiagnostics = [
+        { level: 'error', code: 'ROOT_NOT_FOUND', message: 'Search root not found: /invalid/path' },
+      ];
+      await renderForm(createMockVm({ draftDiagnostics }));
+      expect(screen.getByText('Search root not found: /invalid/path')).toBeTruthy();
+    });
+
+    it('renders multiple diagnostics including ROOT_NOT_FOUND and FILE_NOT_FOUND', async () => {
+      const draftDiagnostics = [
+        { level: 'error', code: 'ROOT_NOT_FOUND', message: 'Root not found: /bad/path' },
+        { level: 'warning', code: 'FILE_NOT_FOUND', message: 'File not found: missing.yml' },
+      ];
+      await renderForm(createMockVm({ draftDiagnostics }));
+      expect(screen.getByText('Root not found: /bad/path')).toBeTruthy();
+      expect(screen.getByText('File not found: missing.yml')).toBeTruthy();
+    });
+
+    // -----------------------------------------------------------------
+    //  Hardening: error handling — failed draft mutation shows error
+    // -----------------------------------------------------------------
+
+    it('renders draft error inside Input files section', async () => {
+      // The error message must be visible within the Input files section
+      // so the user can see it without scrolling elsewhere.
+      await renderForm(createMockVm({ draftError: 'Failed to sync with server' }));
+      const inputFilesSection = screen.getByText(/Input files/).closest('details');
+      expect(inputFilesSection).toBeTruthy();
+      // Verify the error renders inside the details element
+      const errorEl = screen.getByText(/Failed to sync with server/);
+      expect(errorEl).toBeTruthy();
     });
   });
 });

@@ -4,10 +4,9 @@ Verifies that placeholders, tokens, and tags present in the source text
 are preserved in the translated output.
 
 Priority order for placeholder detection:
-1. Existing project protection strategies / token utils
-2. Validation placeholder_guard
-3. Legacy token utils (via bridge)
-4. Fallback regex extractor
+1. Builtin rule set (via ProtectionEngine — single source of truth)
+2. Validation placeholder_guard (optional)
+3. Fallback regex extractor
 """
 
 import logging
@@ -29,6 +28,12 @@ logger = logging.getLogger(__name__)
 # Analyzer identity
 ANALYZER_NAME = "placeholders"
 ANALYZER_VERSION = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# PH tag regex (used to filter out internal rule-set PH markers)
+# ---------------------------------------------------------------------------
+
+_INTERNAL_PH_TAG_RE = re.compile(r'<PH\s+id="r\d+"\s*/>')
 
 # ---------------------------------------------------------------------------
 # Fallback regex patterns (used when no project-level extractor is available)
@@ -87,21 +92,32 @@ def _extract_with_placeholder_guard(text: str) -> List[str]:
         return _extract_with_fallback(text)
 
 
-def _extract_with_legacy_bridge(text: str) -> List[str]:
-    """Extract placeholders using game_token_utils via the legacy bridge.
+def _extract_with_builtin_rule_set(text: str) -> List[str]:
+    """Extract placeholders using the builtin rule set via ProtectionEngine.
+
+    This is the authoritative extractor — it uses the same rule set as the
+    core protection pipeline (``translator_app.protection.builtin_rules``).
+    No legacy bridge or duplicate regex patterns are involved.
+
+    Returns the **original user-facing placeholder text** (e.g. ``[Root.GetName]``,
+    ``$OWNER$``), NOT internal ``<PH id="r{N}"/>`` tags.  Internal PH markers
+    are never valid user-facing placeholders.
 
     Args:
         text: Text to extract placeholders from.
 
     Returns:
-        List of matched placeholder strings.
+        List of original placeholder strings (e.g. ``[Root.GetName]``).
     """
-    from translator_benchmark.legacy_bridge import legacy_protect_tokens
+    from translator_app.protection.engine import ProtectionEngine
+    from translator_app.protection.rule_set import build_builtin_rule_set
 
-    protected, _ = legacy_protect_tokens(text)
-    # Extract <PH id="..."/> tags from protected text
-    ph_tags = re.findall(r'<PH\s+id="[^"]+"/>', protected)
-    return ph_tags
+    engine = ProtectionEngine()
+    rule_set = build_builtin_rule_set()
+    protected, mapping = engine.protect(text, [rule_set])
+    # Return original placeholder text, NOT internal <PH id="r{N}"/> tags.
+    # The protection mapping is {ph_id: original_text, ...}.
+    return list(mapping.values())
 
 
 def _collect_available_extractors() -> List:
@@ -112,8 +128,8 @@ def _collect_available_extractors() -> List:
     """
     extractors: List = [("fallback", _extract_with_fallback)]
 
-    # game_token_utils is always available (internal module)
-    extractors.insert(0, ("legacy_bridge", _extract_with_legacy_bridge))
+    # Builtin rule set is always available (translator_app internal module)
+    extractors.insert(0, ("builtin_rule_set", _extract_with_builtin_rule_set))
 
     try:
         from translator_benchmark.validation.placeholder_guard import extract_placeholders  # noqa: F401
@@ -133,6 +149,10 @@ def extract_placeholders(text: str) -> List[str]:
 
     Runs all available extractors and merges results with deduplication
     while preserving the order of first appearance.
+
+    IMPORTANT: Internal ``<PH id="r{N}"/>`` markers produced by the rule-set
+    protection strategy are **never** valid user-facing placeholders.  They
+    are filtered out in a final safety pass.
 
     Args:
         text: Source or translated text.
@@ -154,7 +174,33 @@ def extract_placeholders(text: str) -> List[str]:
                 results.append(ph)
                 seen.add(ph)
 
+    # ── Safety filter: remove internal rule-set PH markers ──────────────
+    # Internal <PH id="r{N}"/> tokens must NEVER reach user-facing
+    # diagnostics, regardless of which extractor produced them or whether
+    # they leaked into the file text from an incomplete restore.
+    results = [ph for ph in results if not _INTERNAL_PH_TAG_RE.search(ph)]
+
     return results
+
+
+def _get_placeholder_content(placeholder: str) -> str:
+    """Extract the inner content of a placeholder, stripping wrapper chars.
+
+    E.g. ``$type59$`` → ``type59``,  ``£type59£`` → ``type59``,
+    ``[Root.GetName]`` → ``Root.GetName``, ``{name}`` → ``name``.
+
+    Returns the placeholder unchanged if no known wrapper is detected.
+    """
+    if len(placeholder) >= 2:
+        if placeholder.startswith("$") and placeholder.endswith("$"):
+            return placeholder[1:-1]
+        if placeholder.startswith("£") and placeholder.endswith("£"):
+            return placeholder[1:-1]
+        if placeholder.startswith("[") and placeholder.endswith("]"):
+            return placeholder[1:-1]
+        if placeholder.startswith("{") and placeholder.endswith("}"):
+            return placeholder[1:-1]
+    return placeholder
 
 
 def compute_placeholder_identity(placeholder: str) -> str:
@@ -234,25 +280,61 @@ class PlaceholderAnalyzer:
                 line = entry.get("source_line") or 0
                 key_to_line[k] = int(line)
 
-        # Check for missing placeholders
-        missing: List[Tuple[str, str, int]] = []  # (placeholder, identity, index)
-        for i, (ph, ph_id) in enumerate(zip(source_placeholders, source_ids)):
-            if ph_id not in translated_ids:
-                missing.append((ph, ph_id, i))
+        # Position-independent placeholder matching (replaces old identity-based
+        # positional matching that caused false-positive diagnostic attribution).
+        #
+        # Matching strategy:
+        #   1. Exact text match (first pass) — a placeholder is PRESERVED if its
+        #      exact text appears in the translated output.
+        #   2. Cross-type content match (second pass) — if exact text is missing
+        #      but the INNER content matches a translated placeholder with a
+        #      different wrapper type (e.g. ``$type59$`` → ``£type59£``), it
+        #      is CHANGED (type change detected).
+        #   3. Remaining unmatched source placeholders → MISSING.
+        #   4. Remaining translated placeholders whose IDENTITY type does not
+        #      exist in the source at all → EXTRA.
+        #
+        # NOTE: Pure content changes within the same type (e.g. ``$NAME$`` →
+        # ``$OWNER$``) are NOT detected by this supplementary analyzer to
+        # avoid false attribution when multiple same-type placeholders exist.
+        # The authoritative ``SnapshotPlaceholderIntegrityAnalyzer`` handles
+        # this via the placeholder registry with exact-text matching.
 
-        # Check for extra placeholders (present in translation but not in source)
+        missing: List[Tuple[str, str, int]] = []
+        changed: List[Tuple[str, str, str, str]] = []
         extra: List[Tuple[str, str, int]] = []
-        for i, (ph, ph_id) in enumerate(zip(translated_placeholders, translated_ids)):
-            if ph_id not in source_ids:
-                extra.append((ph, ph_id, i))
 
-        # Check for changed placeholders (same index position, different identity)
-        changed: List[Tuple[str, str, str]] = []  # (source_ph, expected_id, actual_id)
-        for i, (src_ph, src_id) in enumerate(zip(source_placeholders, source_ids)):
-            if i < len(translated_placeholders):
-                tgt_id = translated_ids[i]
-                if src_id != tgt_id:
-                    changed.append((src_ph, src_id, tgt_id))
+        remaining_translated = list(translated_placeholders)
+        remaining_t_ids = list(translated_ids)
+
+        # 1. Exact text matching (position-independent)
+        for ph, ph_id in zip(source_placeholders, source_ids):
+            try:
+                idx = remaining_translated.index(ph)
+                remaining_translated.pop(idx)
+                remaining_t_ids.pop(idx)
+            except ValueError:
+                # 2. Cross-type content matching: same inner content,
+                #    different wrapper type (e.g. $type59$ → £type59£)
+                remaining_contents = [
+                    _get_placeholder_content(p) for p in remaining_translated
+                ]
+                src_content = _get_placeholder_content(ph)
+                if src_content and src_content in remaining_contents:
+                    content_idx = remaining_contents.index(src_content)
+                    t_id = remaining_t_ids[content_idx]
+                    t_ph = remaining_translated.pop(content_idx)
+                    remaining_t_ids.pop(content_idx)
+                    changed.append((ph, ph_id, t_id, t_ph))
+                else:
+                    # 3. Truly missing — not found in translated at all
+                    missing.append((ph, ph_id, 0))
+
+        # 4. Remaining translated that have no exact-text match in source → extra
+        source_text_set = set(source_placeholders)
+        for ph, ph_id in zip(remaining_translated, remaining_t_ids):
+            if ph not in source_text_set:
+                extra.append((ph, ph_id, 0))
 
         matched_required = required_total - len(missing)
         score = matched_required / required_total if required_total > 0 else 1.0
@@ -286,21 +368,21 @@ class PlaceholderAnalyzer:
             ))
 
         # Build diagnostics for changed placeholders (error)
-        for src_ph, expected_id, actual_id in changed:
+        for src_ph, expected_id, actual_id, actual_ph in changed:
             diagnostics.append(AnalysisDiagnostic(
                 severity="error",
                 code="CHANGED_PLACEHOLDER",
                 message=(
-                    f"Placeholder identity changed: expected '{expected_id}', "
-                    f"got '{actual_id}' for source placeholder '{src_ph}'"
+                    f"Placeholder content changed: '{src_ph}' → '{actual_ph}' "
+                    f"(identity '{expected_id}')"
                 ),
                 source=AnalysisCheckName.PLACEHOLDERS.value,
                 line=find_line_for_text(source_text, src_ph),
                 key=None,
                 details={
                     "source_placeholder": src_ph,
-                    "expected_identity": expected_id,
-                    "actual_identity": actual_id,
+                    "translated_placeholder": actual_ph,
+                    "identity": expected_id,
                 },
             ))
 

@@ -34,12 +34,6 @@ from translator_app.backend.schemas.translation import (
     PreviewConfigRequest,
     PreviewConfigResponse,
 )
-from translator_app.backend.schemas.editor import (
-    EditorFileResponse,
-    UpdateEntryRequest,
-    UpdateEntryResponse,
-    SaveFileResponse,
-)
 from translator_app.backend.schemas.cache import (
     CacheStatsResponse,
     CacheClearResponse,
@@ -85,6 +79,16 @@ from translator_app.backend.schemas.output_files import (
     ScanDiagnosticResponse,
     OutputReindexRequest,
     OutputScanResultResponse,
+    FileContentsResponse,
+)
+from translator_app.backend.schemas.provider_models import (
+    ProviderModelEntry,
+    CreateProviderModelRequest,
+    UpdateProviderModelRequest,
+    ProviderLink,
+    ProviderGroup,
+    ProviderModelsResponse,
+    ResetDefaultsResponse,
 )
 
 __all__ = [
@@ -100,8 +104,6 @@ __all__ = [
     # translation
     "TranslationOptionsResponse", "ValidateConfigRequest", "ValidateConfigResponse",
     "PreviewConfigRequest", "PreviewConfigResponse",
-    # editor
-    "EditorFileResponse", "UpdateEntryRequest", "UpdateEntryResponse", "SaveFileResponse",
     # cache
     "CacheStatsResponse", "CacheClearResponse",
     # install
@@ -123,4 +125,8 @@ __all__ = [
     "OutputFileResponse", "OutputFileListResponse", "OutputFileTreeResponse",
     "OutputFileAnalysisSummaryResponse", "OutputFilesSummaryResponse",
     "ScanDiagnosticResponse", "OutputReindexRequest", "OutputScanResultResponse",
+    "FileContentsResponse",
+    # provider-models
+    "ProviderModelEntry", "CreateProviderModelRequest", "UpdateProviderModelRequest",
+    "ProviderLink", "ProviderGroup", "ProviderModelsResponse", "ResetDefaultsResponse",
 ]

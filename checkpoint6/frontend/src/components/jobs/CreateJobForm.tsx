@@ -1,8 +1,12 @@
-import { useNavigate, Link } from 'react-router-dom';
+import { useState } from 'react';
 import type { TranslationOptionsResponse, TranslationProfile } from '../../api/types';
+import type { DraftSelectionGroup } from '../../api/types';
+import type { DraftFileMeta } from '../../contexts/DraftJobSelectionContext';
 import type { CreateJobFormViewModel } from '../../hooks/jobs/useCreateJobForm';
-import { FileSuggestionList, AddedFilesChips, PathPicker } from '../../components';
-import { displayNameForLanguage } from '../../utils/localisationLanguage';
+import { FileSuggestionList, PathPicker } from '../../components';
+import ModelDropdown from '../common/ModelDropdown';
+import LanguageDropdown from '../common/LanguageDropdown';
+import RuleSetSelector from '../common/RuleSetSelector';
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -20,6 +24,236 @@ export interface CreateJobFormProps {
 }
 
 /* ------------------------------------------------------------------ */
+/*  CompactDraftPreview — grouped file preview by mod metadata        */
+/* ------------------------------------------------------------------ */
+
+interface FileDisplayInfo {
+  path: string;
+  name: string;
+  exists: boolean;
+}
+
+interface ModGroupInfo {
+  modName: string;
+  files: FileDisplayInfo[];
+}
+
+const MANUAL_GROUP_NAME = 'Manual / Ungrouped files';
+
+/**
+ * Build file info lookup from the backend grouped tree so we can
+ * get file name + exists status for each path.
+ */
+function buildFileInfoMap(
+  grouped: DraftSelectionGroup[],
+): Record<string, { name: string; exists: boolean }> {
+  const map: Record<string, { name: string; exists: boolean }> = {};
+  const seen = new Set<string>();
+  function walk(g: DraftSelectionGroup) {
+    if (g.files) {
+      for (const f of g.files) {
+        if (!seen.has(f.path)) {
+          seen.add(f.path);
+          map[f.path] = { name: f.name, exists: f.exists };
+        }
+      }
+    }
+    if (g.children) {
+      for (const child of g.children) {
+        walk(child);
+      }
+    }
+  }
+  for (const g of grouped) walk(g);
+  return map;
+}
+
+/**
+ * Group flat draft files by mod metadata.
+ * - Files with modName metadata are grouped by that name.
+ * - Files without modName appear under "Manual / Ungrouped files".
+ * - Order within each group preserves the original draft files order.
+ */
+function buildModGroups(
+  draftFiles: string[],
+  draftMeta: Record<string, DraftFileMeta>,
+  grouped: DraftSelectionGroup[],
+): ModGroupInfo[] {
+  const infoMap = buildFileInfoMap(grouped);
+  const groups = new Map<string, FileDisplayInfo[]>();
+  const seen = new Set<string>();
+
+  for (const path of draftFiles) {
+    if (seen.has(path)) continue; // deduplicate
+    seen.add(path);
+
+    const meta = draftMeta[path];
+    const modName =
+      meta?.modName && meta.modName.trim() ? meta.modName.trim() : MANUAL_GROUP_NAME;
+    const { name, exists } = infoMap[path] ?? {
+      name: path.split('/').pop() || path,
+      exists: true,
+    };
+
+    if (!groups.has(modName)) {
+      groups.set(modName, []);
+    }
+    groups.get(modName)!.push({ path, name, exists });
+  }
+
+  const result: ModGroupInfo[] = [];
+
+  // Named mod groups sorted by mod name
+  const namedGroups: ModGroupInfo[] = [];
+  for (const [modName, files] of groups) {
+    if (modName !== MANUAL_GROUP_NAME) {
+      namedGroups.push({ modName, files });
+    }
+  }
+  namedGroups.sort((a, b) => a.modName.localeCompare(b.modName));
+  result.push(...namedGroups);
+
+  // Manual / Ungrouped files group goes last
+  if (groups.has(MANUAL_GROUP_NAME)) {
+    result.push({ modName: MANUAL_GROUP_NAME, files: groups.get(MANUAL_GROUP_NAME)! });
+  }
+
+  return result;
+}
+
+interface CompactDraftPreviewProps {
+  draftFiles: string[];
+  draftMeta: Record<string, DraftFileMeta>;
+  grouped: DraftSelectionGroup[];
+  onRemoveFile: (path: string) => Promise<void>;
+  onRemoveFiles: (paths: string[]) => Promise<void>;
+}
+
+function CompactDraftPreview({
+  draftFiles,
+  draftMeta,
+  grouped,
+  onRemoveFile,
+  onRemoveFiles,
+}: CompactDraftPreviewProps) {
+  if (draftFiles.length === 0) return null;
+
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  const groups = buildModGroups(draftFiles, draftMeta, grouped);
+
+  const toggleGroup = (modName: string) => {
+    setExpandedGroups(prev => ({ ...prev, [modName]: !prev[modName] }));
+  };
+
+  return (
+    <div style={{ marginTop: '0.6rem' }}>
+      {groups.map(group => {
+        const isExpanded = expandedGroups[group.modName] ?? false;
+
+        return (
+          <div
+            key={group.modName}
+            className="file-group-accordion"
+            style={{
+              marginBottom: '0.5rem',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Group header — clickable to toggle */}
+            <div
+              className="file-group-header"
+              data-testid={`file-group-header-${group.modName.replace(/[\s/]+/g, '_')}`}
+              onClick={() => toggleGroup(group.modName)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0.25rem 0.5rem',
+                background: 'var(--color-surface-2)',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                <span className={`file-group-arrow${isExpanded ? ' open' : ''}`}>&#9654;</span>
+                {group.modName} ({group.files.length})
+              </span>
+              <button
+                className="btn btn-sm"
+                onClick={e => {
+                  e.stopPropagation();
+                  onRemoveFiles(group.files.map(f => f.path));
+                }}
+                type="button"
+                style={{
+                  padding: '0.05rem 0.3rem',
+                  fontSize: '0.6rem',
+                  color: 'var(--color-text-muted)',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+                title="Remove all files in this group"
+              >
+                Remove group
+              </button>
+            </div>
+
+            {/* File list — only rendered when expanded */}
+            {isExpanded && (
+              <div style={{ padding: '0.25rem 0.5rem 0.25rem 1rem' }}>
+                {group.files.map(f => (
+                  <div
+                    key={f.path}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.15rem 0',
+                      fontSize: '0.7rem',
+                      fontStyle: f.exists ? 'normal' : 'italic',
+                      opacity: f.exists ? 1 : 0.7,
+                    }}
+                  >
+                    <span title={f.path} style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {f.name}
+                    </span>
+                    <button
+                      onClick={() => onRemoveFile(f.path)}
+                      type="button"
+                      style={{
+                        border: 'none',
+                        background: 'none',
+                        cursor: 'pointer',
+                        padding: '0 0.1rem',
+                        fontSize: '0.7rem',
+                        color: 'var(--color-text-muted)',
+                        lineHeight: 1,
+                        marginLeft: '0.4rem',
+                        flexShrink: 0,
+                      }}
+                      title="Remove file"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -29,14 +263,12 @@ export default function CreateJobForm({
   profiles,
   onOpenProfileEditor,
 }: CreateJobFormProps) {
-  const navigate = useNavigate();
-
   return (
     <>
     <div className="card">
       <div className="card-title">Create Job</div>
 
-      {/* Game filter + Mod selection */}
+      {/* Game filter */}
       <div className="form-group">
         <label>Game</label>
         <div className="form-row">
@@ -57,271 +289,238 @@ export default function CreateJobForm({
             </select>
           </div>
         </div>
-      </div>
-
-      {vm.selectedGameId ? (
-        <div className="form-group">
-          <label>Select mod</label>
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 1 }}>
-              <select
-                className="form-control"
-                value={vm.selectedMod?.mod_id ?? ''}
-                onChange={e => {
-                  const mod = vm.mods.find(m => m.mod_id === e.target.value);
-                  if (mod) vm.handleSelectMod(mod);
-                }}
-              >
-                <option value="">
-                  {vm.modsLoading ? 'Loading mods...' : '\u2014 No mod selected \u2014'}
-                </option>
-                {vm.filteredMods.map(m => (
-                  <option key={m.mod_id} value={m.mod_id}>
-                    {m.name} {m.version ? `(v${m.version})` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {vm.filteredMods.length === 0 && !vm.modsLoading && (
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '0.25rem' }}>
-              No mods discovered yet. <Link to="/games/stellaris">Open Stellaris</Link> and run Discover/Refresh first.
-            </div>
-          )}
-        </div>
-      ) : (
-        <div style={{
-          fontSize: '0.75rem',
-          color: 'var(--color-text-muted)',
-          marginBottom: '0.75rem',
-          padding: '0.5rem 0',
-        }}>
-          Select a game above to view available mods.
-        </div>
-      )}
-
-      {/* Selected mod info */}
-      {vm.selectedMod && (
-        <div style={{
-          padding: '0.5rem 0.75rem',
-          background: 'var(--color-surface-2)',
-          borderRadius: 'var(--radius)',
-          marginBottom: '0.5rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.5rem',
-        }}>
-          <div style={{ fontSize: '0.8rem' }}>
-            <strong>Using files from mod:</strong> {vm.selectedMod.name}
-            {vm.selectedMod.localisation_paths.length > 0 && (
-              <span style={{ color: 'var(--color-text-muted)', marginLeft: '0.5rem' }}>
-                ({vm.selectedMod.localisation_paths.length} files)
-              </span>
-            )}
-          </div>
-          <button className="btn btn-sm" onClick={vm.handleClearSelection} type="button">Clear selection</button>
-        </div>
-      )}
-
-      {/* Language filter — only when a mod is selected */}
-      {vm.selectedMod && vm.availableLanguages.length > 1 && (
-        <div className="form-group">
-          <label>Source language files</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-
-            {/* Language selector */}
-            <select
-              className="form-control"
-              value={vm.selectedLanguage}
-              onChange={e => vm.setSelectedLanguage(e.target.value)}
-              style={{ maxWidth: '200px' }}
-            >
-              {vm.availableLanguages.map(lang => (
-                <option key={lang} value={lang}>
-                  {displayNameForLanguage(lang)}
-                </option>
-              ))}
-            </select>
-
-            {/* Toggle: only selected language */}
-            <label style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.3rem',
-              cursor: 'pointer',
-              userSelect: 'none',
-              whiteSpace: 'nowrap',
-              fontSize: '0.8rem',
-            }}>
-              <input
-                type="checkbox"
-                checked={vm.showOnlySelectedLanguage}
-                onChange={e => vm.setShowOnlySelectedLanguage(e.target.checked)}
-              />
-              <span>Only selected language</span>
-            </label>
-
-            {/* Advanced mode warning */}
-            {!vm.showOnlySelectedLanguage && (
-              <span style={{
-                color: 'var(--color-warning, #e6a817)',
-                fontSize: '0.7rem',
-                fontStyle: 'italic',
-              }}>
-                [&thinsp;!&thinsp;] Mixed languages selected
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Active mod banner (files passed from Mods page) */}
-      {vm.modFromQuery && !vm.selectedMod && (
-        <div style={{
-          padding: '0.5rem 0.75rem',
-          background: 'var(--color-surface-2)',
-          borderRadius: 'var(--radius)',
-          marginBottom: '0.75rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.5rem',
-        }}>
-          <div style={{ fontSize: '0.8rem' }}>
-            <strong>Working with mod:</strong> {vm.modFromQuery}
-          </div>
-          <button className="btn btn-sm" onClick={() => navigate('/games/stellaris')} type="button">
-            Back to mod
-          </button>
-        </div>
-      )}
-
-      {/* Active game config banner (files passed from OtherGame page) */}
-      {vm.gameConfig && (
-        <div style={{
-          padding: '0.5rem 0.75rem',
-          background: 'var(--color-surface-2)',
-          borderRadius: 'var(--radius)',
-          marginBottom: '0.75rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.5rem',
-        }}>
-          <div style={{ fontSize: '0.8rem' }}>
-            <strong>Other Game files</strong>
-            <span style={{ color: 'var(--color-text-muted)', marginLeft: '0.5rem' }}>
-              (handler: {String(vm.gameConfig.file_handler || '\u2014')})
-            </span>
-          </div>
-          <button className="btn btn-sm" onClick={() => navigate('/games/generic')} type="button">
-            Back to Other Game
-          </button>
-        </div>
-      )}
-
-      {/* File search */}
-      <div className="form-group">
-        <label>Add search root path</label>
-        <div className="form-row" style={{ gap: '0.5rem' }}>
-          <div style={{ flex: 1 }}>
-            <PathPicker
-              value={vm.pickSearchPath}
-              onChange={vm.setPickSearchPath}
-              mode="directory"
-              placeholder="Pick a root directory to search"
-            />
-          </div>
-          <button
-            className="btn"
-            onClick={() => {
-              if (vm.pickSearchPath.trim()) {
-                vm.setSearchQuery(vm.searchQuery + (vm.searchQuery ? '\n' : '') + vm.pickSearchPath.trim());
-                vm.setPickSearchPath('');
-              }
-            }}
-            type="button"
-            style={{ alignSelf: 'flex-end', marginBottom: '0.85rem' }}
-          >
-            Add Search Path
-          </button>
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label>Search localisation files</label>
-        <div className="form-row">
-          <div className="form-group" style={{ flex: 1 }}>
-            <textarea
-              className="form-control"
-              rows={2}
-              placeholder={"Enter mod directory path(s) to search for localisation files\n/Users/me/paradox/mods/my_mod"}
-              value={vm.searchQuery}
-              onChange={e => vm.setSearchQuery(e.target.value)}
-            />
-          </div>
-          <div className="form-group" style={{ flex: 0, display: 'flex', alignItems: 'flex-end' }}>
-            <button className="btn btn-primary" onClick={vm.handleSearch} disabled={vm.searching}>
-              {vm.searching ? 'Searching...' : 'Search'}
-            </button>
-          </div>
-        </div>
-        {vm.searchError && (
-          <div className="alert alert-error" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
-            {vm.searchError}
+        {!vm.selectedGameId && (
+          <div style={{
+            fontSize: '0.75rem',
+            color: 'var(--color-text-muted)',
+            marginTop: '0.25rem',
+          }}>
+            Select a game above to view available mods.
           </div>
         )}
       </div>
 
-      <FileSuggestionList
-        files={vm.foundFiles}
-        addedPaths={vm.addedPaths}
-        onAdd={f => vm.addPath(f.path)}
-        onAddAll={vm.handleAddAll}
-        onRemove={f => vm.removePath(f)}
-      />
+      {/* ================================================================ */}
+      {/*  Input files — collapsible section with all file input modes    */}
+      {/* ================================================================ */}
+      <details style={{ marginBottom: '1rem' }} open>
+        <summary style={{
+          cursor: 'pointer',
+          fontSize: '0.9rem',
+          fontWeight: 600,
+          padding: '0.25rem 0',
+          color: 'var(--color-text)',
+        }}>
+          Input files
+          {vm.draftFileCount > 0 && (
+            <span style={{
+              marginLeft: '0.5rem',
+              fontSize: '0.75rem',
+              color: 'var(--color-text-muted)',
+              fontWeight: 400,
+            }}>
+              ({vm.draftFileCount} file{vm.draftFileCount !== 1 ? 's' : ''} selected)
+            </span>
+          )}
+          {vm.draftLoading && (
+            <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+              loading...
+            </span>
+          )}
+        </summary>
+        <div style={{ paddingLeft: '0.5rem', borderLeft: '2px solid var(--color-surface-2)', marginTop: '0.5rem' }}>
 
-      <div className="form-group">
-        <label>Add file path</label>
-        <div className="form-row" style={{ gap: '0.5rem' }}>
-          <div style={{ flex: 1 }}>
-            <PathPicker
-              value={vm.pickFilePath}
-              onChange={vm.setPickFilePath}
-              mode="file"
-              extensions={['.yml', '.yaml']}
-              placeholder="Pick a .yml/.yaml file"
-            />
+          {/* --- Add from mods (multi-select) --- */}
+          {vm.filteredMods.length > 0 && (
+            <div className="form-group">
+              <label>Add from mods</label>
+              <div style={{
+                maxHeight: '160px',
+                overflowY: 'auto',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius)',
+                padding: '0.25rem 0.5rem',
+                marginBottom: '0.4rem',
+              }}>
+                {vm.filteredMods.map(m => (
+                  <label key={m.path} style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '0.2rem 0',
+                    fontSize: '0.8rem',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={vm.selectedModPaths.includes(m.path)}
+                      onChange={() => {
+                        if (vm.selectedModPaths.includes(m.path)) {
+                          vm.setSelectedModPaths(vm.selectedModPaths.filter(p => p !== m.path));
+                        } else {
+                          vm.setSelectedModPaths([...vm.selectedModPaths, m.path]);
+                        }
+                      }}
+                    />
+                    <span>{m.name}{m.version ? ` (v${m.version})` : ''}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={vm.handleAddModFiles}
+                disabled={vm.selectedModPaths.length === 0}
+                type="button"
+              >
+                Add selected mods ({vm.selectedModPaths.length})
+              </button>
+            </div>
+          )}
+
+          {/* --- Search localisation files --- */}
+          <div className="form-group">
+            <label>Search localisation files</label>
+            <div className="form-row" style={{ gap: '0.5rem' }}>
+              <div style={{ flex: 1 }}>
+                <PathPicker
+                  value={vm.pickSearchPath}
+                  onChange={vm.setPickSearchPath}
+                  mode="directory"
+                  placeholder="Pick a root directory to search"
+                />
+              </div>
+              <button
+                className="btn"
+                onClick={() => {
+                  if (vm.pickSearchPath.trim()) {
+                    vm.setSearchQuery(vm.searchQuery + (vm.searchQuery ? '\n' : '') + vm.pickSearchPath.trim());
+                    vm.setPickSearchPath('');
+                  }
+                }}
+                type="button"
+                style={{ alignSelf: 'flex-end', marginBottom: '0.85rem' }}
+              >
+                Add Search Path
+              </button>
+            </div>
+            <div className="form-row" style={{ gap: '0.5rem' }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <textarea
+                  className="form-control"
+                  rows={2}
+                  placeholder={"Enter mod directory path(s) to search for localisation files\n/Users/me/paradox/mods/my_mod"}
+                  value={vm.searchQuery}
+                  onChange={e => vm.setSearchQuery(e.target.value)}
+                />
+              </div>
+              <div className="form-group" style={{ flex: 0, display: 'flex', alignItems: 'flex-end' }}>
+                <button className="btn btn-primary" onClick={vm.handleSearch} disabled={vm.searching}>
+                  {vm.searching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            </div>
+            {vm.searchError && (
+              <div className="alert alert-error" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+                {vm.searchError}
+              </div>
+            )}
           </div>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              if (vm.pickFilePath.trim()) {
-                vm.addPath(vm.pickFilePath.trim());
-                vm.setPickFilePath('');
-              }
-            }}
-            type="button"
-            style={{ alignSelf: 'flex-end', marginBottom: '0.85rem' }}
-          >
-            Add File
-          </button>
+
+          <FileSuggestionList
+            files={vm.foundFiles}
+            addedPaths={vm.addedPaths}
+            onAdd={f => vm.addPath(f.path)}
+            onAddAll={vm.handleAddAll}
+            onRemove={f => vm.removePath(f)}
+          />
+
+          {/* --- Add file path (manual/browse) --- */}
+          <div className="form-group">
+            <label>Add file path</label>
+            <div className="form-row" style={{ gap: '0.5rem' }}>
+              <div style={{ flex: 1 }}>
+                <PathPicker
+                  value={vm.pickFilePath}
+                  onChange={vm.setPickFilePath}
+                  mode="file"
+                  extensions={['.yml', '.yaml']}
+                  placeholder="Pick a .yml/.yaml file"
+                />
+              </div>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  if (vm.pickFilePath.trim()) {
+                    vm.addPath(vm.pickFilePath.trim());
+                    vm.setPickFilePath('');
+                  }
+                }}
+                type="button"
+                style={{ alignSelf: 'flex-end', marginBottom: '0.85rem' }}
+              >
+                Add File
+              </button>
+            </div>
+          </div>
+
+          {/* --- Selected translation files: textarea + compact preview --- */}
+          <div className="form-group">
+            <label style={{ marginBottom: '0.4rem' }}>
+              File paths (one per line)
+              {vm.draftFileCount > 0 && (
+                <span style={{ color: 'var(--color-text-muted)', fontWeight: 400, fontSize: '0.7rem', marginLeft: '0.4rem' }}>
+                  ({vm.draftFileCount} file{vm.draftFileCount !== 1 ? 's' : ''})
+                </span>
+              )}
+            </label>
+            <textarea
+              className="form-control"
+              rows={5}
+              placeholder={"/path/to/mod/localisation/english/example_l_english.yml"}
+              value={vm.form.filePaths}
+              onChange={e => vm.setFormField('filePaths', e.target.value)}
+            />
+
+            {/* Compact preview chips — grouped by mod */}
+            <CompactDraftPreview
+              draftFiles={vm.draftFiles}
+              draftMeta={vm.draftMeta}
+              grouped={vm.draftGrouped}
+              onRemoveFile={vm.handleRemoveDraftFile}
+              onRemoveFiles={vm.handleRemoveDraftFiles}
+            />
+
+            {/* Diagnostics */}
+            {vm.draftDiagnostics.length > 0 && (
+              <div style={{ padding: '0.25rem 0.5rem', marginTop: '0.25rem' }}>
+                {vm.draftDiagnostics.map((d, i) => (
+                  <div key={i} style={{
+                    fontSize: '0.7rem',
+                    color: d.level === 'error' ? 'var(--color-error)' : 'var(--color-warning, #e6a817)',
+                    padding: '0.15rem 0',
+                  }}>
+                    {d.message}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {vm.draftError && (
+              <div style={{
+                padding: '0.3rem 0.5rem',
+                marginTop: '0.25rem',
+                fontSize: '0.75rem',
+                color: 'var(--color-error)',
+                background: 'var(--color-surface-1)',
+                borderRadius: 'var(--radius)',
+              }}>
+                Draft error: {vm.draftError}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-
-      <div className="form-group">
-        <label>File paths (one per line)</label>
-        <textarea
-          className="form-control"
-          rows={3}
-          placeholder={"/path/to/mod/localisation/english/example_l_english.yml"}
-          value={vm.form.filePaths}
-          onChange={e => vm.setFormField('filePaths', e.target.value)}
-        />
-      </div>
-
-      <AddedFilesChips paths={vm.form.filePathList} onRemove={vm.removePath} />
+      </details>
 
       <div className="form-row">
         <div className="form-group">
@@ -335,18 +534,20 @@ export default function CreateJobForm({
         </div>
         <div className="form-group">
           <label>Source Language</label>
-          <input
-            className="form-control"
+          <LanguageDropdown
             value={vm.form.srcLang}
-            onChange={e => vm.setFormField('srcLang', e.target.value)}
+            onChange={v => vm.setFormField('srcLang', v)}
+            placeholder="Source language"
+            allowCustom
           />
         </div>
         <div className="form-group">
           <label>Target Language</label>
-          <input
-            className="form-control"
+          <LanguageDropdown
             value={vm.form.dstLang}
-            onChange={e => vm.setFormField('dstLang', e.target.value)}
+            onChange={v => vm.setFormField('dstLang', v)}
+            placeholder="Target language"
+            allowCustom
           />
         </div>
       </div>
@@ -369,11 +570,12 @@ export default function CreateJobForm({
         </div>
         <div className="form-group">
           <label>Model</label>
-          <input
-            className="form-control"
-            placeholder="e.g. gpt-4"
+          <ModelDropdown
+            provider={vm.form.provider}
             value={vm.form.model}
-            onChange={e => vm.setFormField('model', e.target.value)}
+            onChange={v => vm.setFormField('model', v)}
+            placeholder="e.g. gpt-4"
+            className="form-control"
           />
         </div>
       </div>
@@ -701,19 +903,18 @@ export default function CreateJobForm({
             </div>
           )}
 
-          {/* Protection Strategy */}
+          {/* Protection Rule Sets */}
           <div className="form-group">
-            <label>Protection Strategy</label>
-            <select
-              className="form-control"
-              value={vm.form.protectionStrategy}
-              onChange={e => vm.setFormField('protectionStrategy', e.target.value)}
-            >
-              <option value="">— None —</option>
-              {options?.protection_strategies.map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
+            <label>Protection Rule Sets</label>
+            <RuleSetSelector
+              ruleSets={options?.rule_sets ?? []}
+              selectedIds={vm.form.ruleSetIds}
+              onChange={ids => {
+                vm.setFormField('ruleSetIds', ids);
+                // Auto-set protection strategy based on whether rule sets are selected
+                vm.setFormField('protectionStrategy', ids.length > 0 ? 'rule_set' : '');
+              }}
+            />
           </div>
 
           {/* Validator */}
@@ -956,19 +1157,6 @@ export default function CreateJobForm({
                   <p style={{ margin: 0, lineHeight: 1.5 }}>
                     This will replace current translation settings with values from the selected profile. Selected files and mod selection will stay unchanged.
                   </p>
-                  {vm.profileGameWarning && (
-                    <div
-                      className="alert alert-info"
-                      style={{
-                        marginTop: '10px',
-                        padding: '8px 10px',
-                        fontSize: '0.8rem',
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {vm.profileGameWarning}
-                    </div>
-                  )}
                 </>
               ) : (
                 <p style={{ margin: 0, lineHeight: 1.5 }}>

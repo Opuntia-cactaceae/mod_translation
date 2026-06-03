@@ -127,7 +127,7 @@ def validate_path(
 
 # Supported enum values (could be extended from registries at runtime)
 SUPPORTED_PROVIDERS = frozenset({"openai", "groq", "anthropic", "google", "deepseek", "ollama", "custom"})
-SUPPORTED_PROTECTION_STRATEGIES = frozenset({"xml_placeholders", "regex_placeholders", "none"})
+SUPPORTED_PROTECTION_STRATEGIES = frozenset({"none", "rule_set"})  # rule_set = rule-set-driven
 SUPPORTED_VALIDATORS = frozenset({"composite", "basic", "strict"})
 SUPPORTED_PROMPT_PROFILES = frozenset({"simple_single", "json_batch", "strict_json_batch"})
 

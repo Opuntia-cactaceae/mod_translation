@@ -39,7 +39,7 @@ def _read_descriptor_path_value(descriptor_path: str) -> str | None:
     return None
 
 
-def _check_installed(mod, target_dir: str | None) -> tuple[bool, str | None, str, bool]:
+def _check_installed(mod, target_dir: str | None) -> tuple[bool, str | None, str, bool, bool]:
     """Check if a mod is already installed in *target_dir*.
 
     Priority order:
@@ -52,10 +52,14 @@ def _check_installed(mod, target_dir: str | None) -> tuple[bool, str | None, str
     path differs from the basename and both exist, ``install_conflict``
     is set to ``True``.
 
-    Returns (installed, installed_path, install_action, install_conflict).
+    If the resolved source path and installed path point to the same
+    directory the mod is flagged as *self-installed* — no copy/reinstall
+    is possible and there is no real conflict.
+
+    Returns (installed, installed_path, install_action, install_conflict, is_self_installed).
     """
     if not target_dir or not mod.path:
-        return False, None, "install", False
+        return False, None, "install", False, False
 
     target = Path(target_dir)
     mod_path = Path(mod.path)
@@ -78,19 +82,32 @@ def _check_installed(mod, target_dir: str | None) -> tuple[bool, str | None, str
             # Installed at descriptor path
             action = "reinstall"
             conflict = basename_exists and str(basename_folder.resolve()) != str(desc_resolved.resolve())
-            return True, str(desc_resolved), action, conflict
+            installed_path = str(desc_resolved)
         elif basename_exists:
             # Installed at basename path (descriptor path differs)
             conflict = True  # Descriptor points elsewhere
-            return True, str(basename_folder.resolve()), "reinstall", conflict
+            installed_path = str(basename_folder.resolve())
+            action = "reinstall"
         else:
             # Neither path in target exists — fall through to .mod file check below
-            pass
+            installed_path = None
+            action = "install"
+            conflict = False
+
+        if installed_path:
+            is_self = _paths_are_same(mod.path, installed_path)
+            if is_self:
+                return True, installed_path, action, False, True
+            return True, installed_path, action, conflict, False
 
     # ---- No descriptor — fallback to basename ----
     expected_path = target / mod_path.name
     if expected_path.exists():
-        return True, str(expected_path), "reinstall", False
+        installed_path = str(expected_path.resolve()) if expected_path.exists() else str(expected_path)
+        is_self = _paths_are_same(mod.path, installed_path)
+        if is_self:
+            return True, installed_path, "reinstall", False, True
+        return True, installed_path, "reinstall", False, False
 
     # ---- Also check if a .mod descriptor file exists in target_dir ----
     descriptor_candidates = [
@@ -100,9 +117,23 @@ def _check_installed(mod, target_dir: str | None) -> tuple[bool, str | None, str
     ]
     for desc in descriptor_candidates:
         if desc.exists():
-            return True, str(desc), "reinstall", False
+            installed_path = str(desc)
+            is_self = _paths_are_same(mod.path, installed_path)
+            if is_self:
+                return True, installed_path, "reinstall", False, True
+            return True, str(desc), "reinstall", False, False
 
-    return False, None, "install", False
+    return False, None, "install", False, False
+
+
+def _paths_are_same(path_a: str, path_b: str) -> bool:
+    """Return ``True`` if both paths resolve to the same filesystem location."""
+    try:
+        resolved_a = Path(path_a).resolve()
+        resolved_b = Path(path_b).resolve()
+        return str(resolved_a) == str(resolved_b)
+    except OSError:
+        return False
 
 
 def _enrich_with_installed(mod, svcs: Services) -> dict:
@@ -115,12 +146,13 @@ def _enrich_with_installed(mod, svcs: Services) -> dict:
     if settings.paths and settings.paths.stellaris_mods_dir:
         target_dir = settings.paths.stellaris_mods_dir
 
-    installed, installed_path, install_action, conflict = _check_installed(mod, target_dir)
+    installed, installed_path, install_action, conflict, self_installed = _check_installed(mod, target_dir)
     return {
         "installed": installed,
         "installed_path": installed_path,
         "install_action": install_action,
         "install_conflict": conflict,
+        "is_self_installed": self_installed,
     }
 
 

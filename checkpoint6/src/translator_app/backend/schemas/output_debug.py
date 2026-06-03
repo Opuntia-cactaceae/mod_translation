@@ -36,9 +36,11 @@ class AnalysisDebugInfoResponse(BaseModel):
     latest_analysis_at: Optional[str] = None
     analysis_source_hash: Optional[str] = None
     analysis_translated_hash: Optional[str] = None
-    validity_state: str = "missing"
+    validity_state: str = "not_analyzed"
     diagnostics: List[Dict[str, Any]] = []
     history_count: int = 0
+    snapshot_analysis: Optional[Dict[str, Any]] = None
+    profile_staleness: Optional[Dict[str, Any]] = None
 
 
 class IntegrityDebugInfoResponse(BaseModel):
@@ -85,7 +87,7 @@ class OutputFileDebugSnapshotResponse(BaseModel):
     current_translated_hash: Optional[str] = None
     analysis_stale: bool = False
     stale_reason: Optional[str] = None
-    latest_analysis_state: str = "missing"
+    latest_analysis_state: str = "not_analyzed"
     manifest: ManifestDebugInfoResponse = ManifestDebugInfoResponse()
     scanner: ScannerDebugInfoResponse = ScannerDebugInfoResponse()
     analysis: AnalysisDebugInfoResponse = AnalysisDebugInfoResponse()

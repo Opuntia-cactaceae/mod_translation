@@ -11,6 +11,7 @@ import {
   type JobModel,
 } from '../domain';
 import { STORAGE_KEYS, LEGACY_KEYS } from '../utils/storageKeys';
+import { usePersistentState } from '../hooks/usePersistentState';
 import ProfileEditorModal from '../components/profiles/ProfileEditorModal';
 import TracePanel from '../components/jobs/TracePanel';
 import JobsTable from '../components/jobs/JobsTable';
@@ -115,6 +116,39 @@ export default function TranslationJobs() {
     storageKey: STORAGE_KEYS.jobsFilters,
     legacyKeys: [LEGACY_KEYS[STORAGE_KEYS.jobsFilters]],
   });
+
+  // --- Sort / Group ---
+  const [sortOrder, setSortOrder] = usePersistentState<'newest' | 'oldest'>(
+    STORAGE_KEYS.jobsSortOrder,
+    'newest',
+  );
+  const [groupBy, setGroupBy] = usePersistentState<'none' | 'status' | 'date'>(
+    STORAGE_KEYS.jobsGroupBy,
+    'none',
+  );
+
+  // --- Collapsible groups (all group types: date, status) ---
+  const [expandedGroups, setExpandedGroups] = usePersistentState<Record<string, boolean>>(
+    STORAGE_KEYS.translationJobsExpandedGroups,
+    {},
+    {
+      legacyKeys: [STORAGE_KEYS.translationJobsExpandedDateGroups],
+      migrateLegacy: (old: Record<string, boolean>) => {
+        const migrated: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(old)) {
+          migrated[k.includes(':') ? k : `date:${k}`] = v;
+        }
+        return migrated;
+      },
+    },
+  );
+
+  function handleToggleGroup(key: string) {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [key]: prev[key] === undefined ? false : !prev[key],
+    }));
+  }
 
   // --- Trace (declared first; used by createJobForm / jobActions / recovery) ---
   const traceSelection = useTraceSelection();
@@ -236,8 +270,8 @@ export default function TranslationJobs() {
     }
   }
 
-  function handleOpenEditor(filePath: string) {
-    navigate(`/editor?filePath=${encodeURIComponent(filePath)}`);
+  function handleOpenEditor(outputFileId: string) {
+    navigate(`/translated-files/${encodeURIComponent(outputFileId)}/editor`);
   }
 
   function handleViewTranslatedFiles(jobId: string) {
@@ -304,6 +338,25 @@ export default function TranslationJobs() {
             <option value="failed">Failed</option>
             <option value="cancelled">Cancelled</option>
           </select>
+          <select
+            className="form-control"
+            style={{ width: 'auto', minWidth: 100 }}
+            value={sortOrder}
+            onChange={e => setSortOrder(e.target.value as 'newest' | 'oldest')}
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+          <select
+            className="form-control"
+            style={{ width: 'auto', minWidth: 100 }}
+            value={groupBy}
+            onChange={e => setGroupBy(e.target.value as 'none' | 'status' | 'date')}
+          >
+            <option value="none">No grouping</option>
+            <option value="status">Group by status</option>
+            <option value="date">Group by date</option>
+          </select>
           <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
             <button
               className="btn btn-sm"
@@ -333,6 +386,8 @@ export default function TranslationJobs() {
           jobs={jobs}
           filteredJobs={jobFilters.filteredJobs}
           expandedJobs={expanded.expandedJobs}
+          expandedGroups={expandedGroups}
+          onToggleGroup={handleToggleGroup}
           editingJobId={configEditing.editingJobId}
           onToggleExpanded={expanded.toggleJobExpand}
           onOpenTrace={openTrace}
@@ -350,6 +405,8 @@ export default function TranslationJobs() {
           onViewTranslatedFiles={handleViewTranslatedFiles}
           options={options}
           savingConfig={configEditing.savingConfig}
+          groupBy={groupBy}
+          sortOrder={sortOrder}
         />
       </div>
 

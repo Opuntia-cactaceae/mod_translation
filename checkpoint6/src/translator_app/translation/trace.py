@@ -10,8 +10,11 @@ sanitizer for deeper secret masking.
 
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from translator_app.diagnostics.sanitizer import LogSanitizer
 from translator_app.translation.trace_models import (
@@ -34,6 +37,7 @@ _RUNTIME_EVENT_TYPES = frozenset({
     TraceEventType.CACHE_HIT,
     TraceEventType.CACHE_MISS,
     TraceEventType.PROMPT_BUILT,
+    TraceEventType.PROTECTION_SNAPSHOT_CREATED,
 })
 
 
@@ -155,7 +159,7 @@ class TranslationTraceService:
             batch_index=batch_index,
             unit_ids=unit_ids or [],
             event_type=event_type,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
             provider=provider,
             model=model,
             src_lang=src_lang,
@@ -191,15 +195,39 @@ class TranslationTraceService:
         """Return events for a job, optionally filtered by event type.
 
         Results are ordered newest-first.
+
+        First checks the in-memory event buffer.  If no matching events
+        are found there, falls back to the database repository so that
+        events that were evicted from the in-memory buffer (e.g. due to
+        ``max_events`` limit) are still discoverable.
         """
         filtered = [e for e in self._events if e.job_id == job_id]
 
         if event_type is not None:
             filtered = [e for e in filtered if e.event_type == event_type]
 
-        # Newest first
-        filtered.sort(key=lambda e: e.timestamp, reverse=True)
-        return filtered[:limit]
+        if filtered:
+            # In-memory hit — return newest-first
+            filtered.sort(key=lambda e: e.timestamp, reverse=True)
+            return filtered[:limit]
+
+        # In-memory miss — fall back to database repository
+        if self._repo is not None:
+            try:
+                db_events = self._repo.get_events_by_job(
+                    job_id=job_id,
+                    limit=limit,
+                    event_type=event_type.value if event_type else None,
+                )
+                if db_events:
+                    return db_events
+            except Exception:
+                logger.debug(
+                    "Failed to query DB trace events for job %s", job_id,
+                    exc_info=True,
+                )
+
+        return []
 
     def get_runtime_events(
         self,
@@ -370,7 +398,7 @@ class TranslationTraceService:
             "source_text": sanitized_source,
             "translated_text": sanitized_translated,
             "error_message": sanitized_error,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
 
         job_units = self._trace_units.setdefault(entry.job_id, [])

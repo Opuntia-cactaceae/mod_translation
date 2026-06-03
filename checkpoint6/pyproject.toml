@@ -45,6 +45,11 @@ token = [
 [project.urls]
 Repository = "https://github.com/user/translator_benchmark"
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-q --tb=short --import-mode=importlib"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

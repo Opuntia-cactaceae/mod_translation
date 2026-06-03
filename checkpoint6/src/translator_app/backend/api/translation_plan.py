@@ -37,10 +37,14 @@ def preview_translation_plan(
         config = TranslationConfig()
 
     # Build planner with services
+    pf = svcs.protection.compute_protection_fingerprint(
+        rule_set_ids=config.protection.rule_set_ids,
+    )
     planner = TaskPlanner(
         config=config,
         file_service=svcs.file_processing,
         cache=svcs.cache if config.use_cache else None,
+        protection_fingerprint=pf,
     )
 
     plan = planner.build_plan(file_paths=body.file_paths)

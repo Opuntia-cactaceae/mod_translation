@@ -16,6 +16,7 @@ from translator_app.backend.schemas.jobs import (
     JobSummaryResponse,
     JobProgressResponse,
     JobDiagnosticResponse,
+    OutputFileRef,
     TaskPlanSummary,
     CreateJobRequest,
     JobActionResponse,
@@ -79,6 +80,41 @@ def _build_diagnostics(job: TranslationJob) -> list:
     ]
 
 
+def _build_output_file_refs(
+    svcs: Services, job_id: str,
+) -> List[OutputFileRef]:
+    """Build output file refs for a single job.
+
+    Returns a list of ``OutputFileRef`` objects by querying the
+    ``TranslatedOutputFileRepository``.  Empty list if the job has no
+    indexed output files or the repo is unavailable.
+    """
+    try:
+        raw_refs = svcs.output_files_repo.get_output_file_refs(job_id)
+        return [OutputFileRef(id=r["id"], path=r["path"]) for r in raw_refs]
+    except Exception:
+        logger.exception("Failed to build output_file_refs for job %s", job_id)
+        return []
+
+
+def _build_output_file_refs_batch(
+    svcs: Services, job_ids: List[str],
+) -> Dict[str, List[OutputFileRef]]:
+    """Build output file refs for multiple jobs in a single query.
+
+    Returns a dict mapping job_id to a list of ``OutputFileRef``.
+    """
+    try:
+        raw = svcs.output_files_repo.get_output_file_refs_batch(job_ids)
+        return {
+            jid: [OutputFileRef(id=r["id"], path=r["path"]) for r in refs]
+            for jid, refs in raw.items()
+        }
+    except Exception:
+        logger.exception("Failed to build output_file_refs batch for %d jobs", len(job_ids))
+        return {}
+
+
 def _build_task_plan_summary(job: TranslationJob) -> Optional[TaskPlanSummary]:
     if job.task_plan is None:
         return None
@@ -95,25 +131,34 @@ def _build_task_plan_summary(job: TranslationJob) -> Optional[TaskPlanSummary]:
 def _serialize_config(job: TranslationJob) -> Optional[Dict[str, Any]]:
     """Serialize job.config to a JSON-compatible dict.
 
-    Handles both TranslationConfig dataclass and plain dict (after
-    deserialization from the repository).
+    Handles TranslationConfig dataclass, objects with to_dict(),
+    and plain dict (after deserialization from the repository).
     """
     if job.config is None:
         return None
     # Case 1: already a dict (e.g. after deserialization from repo)
     if isinstance(job.config, dict):
         return job.config
-    # Case 2: TranslationConfig dataclass
-    try:
+    # Case 2: object with to_dict() method (matching _job_to_dict)
+    if hasattr(job.config, "to_dict"):
+        return job.config.to_dict()
+    # Case 3: dataclass
+    if hasattr(job.config, "__dataclass_fields__"):
         from dataclasses import asdict
-        if hasattr(job.config, "__dataclass_fields__"):
-            return asdict(job.config)
-    except Exception:
-        pass
+        return asdict(job.config)
+    # Unexpected type — log and return None rather than silently dropping config
+    logger.warning(
+        "Unexpected config type %s for job %s — config will be None in response",
+        type(job.config).__name__,
+        job.id,
+    )
     return None
 
 
-def _job_to_response(job: TranslationJob) -> JobResponse:
+def _job_to_response(
+    job: TranslationJob,
+    output_file_refs: Optional[List[OutputFileRef]] = None,
+) -> JobResponse:
     return JobResponse(
         id=job.id,
         name=job.name,
@@ -128,9 +173,12 @@ def _job_to_response(job: TranslationJob) -> JobResponse:
         total_batches=job.total_batches,
         created_at=job.created_at.isoformat() if hasattr(job.created_at, "isoformat") else str(job.created_at),
         updated_at=job.updated_at.isoformat() if job.updated_at and hasattr(job.updated_at, "isoformat") else str(job.updated_at) if job.updated_at else None,
+        started_at=job.started_at.isoformat() if job.started_at and hasattr(job.started_at, "isoformat") else str(job.started_at) if job.started_at else None,
+        completed_at=job.completed_at.isoformat() if job.completed_at and hasattr(job.completed_at, "isoformat") else str(job.completed_at) if job.completed_at else None,
         error_message=job.error_message,
         file_paths=list(job.file_paths),
         output_files=list(job.output_files or []),
+        output_file_refs=output_file_refs or [],
         output_root_dir=job.output_root_dir,
         progress_detail=_build_progress_response(job.get_progress()),
         task_plan_summary=_build_task_plan_summary(job),
@@ -154,6 +202,7 @@ def _job_to_summary_response(job: TranslationJob) -> JobSummaryResponse:
         current_batch_index=job.current_batch_index,
         total_batches=job.total_batches,
         updated_at=job.updated_at.isoformat() if job.updated_at and hasattr(job.updated_at, "isoformat") else str(job.updated_at) if job.updated_at else None,
+        completed_at=job.completed_at.isoformat() if job.completed_at and hasattr(job.completed_at, "isoformat") else str(job.completed_at) if job.completed_at else None,
         active_worker=_is_active_worker(job.id),
         error_message=job.error_message,
     )
@@ -316,7 +365,10 @@ def list_jobs(status: Optional[str] = None, svcs: Services = Depends(get_service
     # Enrich all running jobs with worker diagnostic
     for j in jobs:
         _enrich_job_with_worker_diagnostic(j, svcs)
-    return [_job_to_response(j) for j in jobs]
+    # Batch-load output file refs to avoid N+1 queries
+    job_ids = [j.id for j in jobs]
+    refs_map = _build_output_file_refs_batch(svcs, job_ids)
+    return [_job_to_response(j, output_file_refs=refs_map.get(j.id)) for j in jobs]
 
 
 @router.get("/active-executions")
@@ -352,7 +404,36 @@ def create_job(body: CreateJobRequest, svcs: Services = Depends(get_services)):
 
     If a config dict is provided, it will be passed to the
     TaskPlanner to build the task plan.
+
+    When ``use_draft_selection`` is ``True`` and ``file_paths`` is empty,
+    the handler fills ``file_paths`` and ``file_metadata`` from the backend
+    draft selection state and then clears the draft.
     """
+    # --- Draft selection fallback ---
+    if body.use_draft_selection and not body.file_paths:
+        draft_files = svcs.draft_selection.files
+        if not draft_files:
+            raise APIError(
+                code=INVALID_REQUEST,
+                message="use_draft_selection=True but draft selection is empty. "
+                        "Add files to the draft first.",
+            )
+        # Fill file_paths and file_metadata from draft state
+        body_dict = body.model_dump()
+        body_dict["file_paths"] = draft_files
+        # Convert draft metadata to FileJobMetadata objects
+        draft_meta = svcs.draft_selection.file_metadata
+        if draft_meta:
+            from translator_app.backend.schemas.jobs import FileJobMetadata
+            file_meta = {}
+            for fpath, meta in draft_meta.items():
+                file_meta[fpath] = FileJobMetadata(
+                    mod_id=meta.get("mod_id"),
+                    mod_name=meta.get("mod_name"),
+                )
+            body_dict["file_metadata"] = file_meta
+        body = CreateJobRequest(**body_dict)
+
     if not body.file_paths:
         raise APIError(
             code=INVALID_REQUEST,
@@ -414,10 +495,14 @@ def create_job(body: CreateJobRequest, svcs: Services = Depends(get_services)):
     # Build a TaskPlanner so the job gets a task plan at creation time
     planner = None
     if config is not None:
+        pf = svcs.protection.compute_protection_fingerprint(
+            rule_set_ids=config.protection.rule_set_ids,
+        )
         planner = TaskPlanner(
             config=config,
             file_service=svcs.file_processing,
             cache=svcs.cache,
+            protection_fingerprint=pf,
         )
 
     try:
@@ -488,7 +573,8 @@ def create_job(body: CreateJobRequest, svcs: Services = Depends(get_services)):
     except Exception:
         logger.debug("Failed to clear draft selection", exc_info=True)
 
-    return _job_to_response(job)
+    refs = _build_output_file_refs(svcs, job.id)
+    return _job_to_response(job, output_file_refs=refs)
 
 
 @router.get("/{job_id}", response_model=JobResponse)
@@ -506,7 +592,8 @@ def get_job(job_id: str, svcs: Services = Depends(get_services)):
         )
     # Enrich with worker diagnostic for stuck detection
     _enrich_job_with_worker_diagnostic(job, svcs)
-    return _job_to_response(job)
+    refs = _build_output_file_refs(svcs, job.id)
+    return _job_to_response(job, output_file_refs=refs)
 
 
 @router.post("/{job_id}/start", response_model=JobActionResponse)
@@ -517,6 +604,8 @@ def start_job(job_id: str, svcs: Services = Depends(get_services)):
     except JobManagerError as e:
         _handle_job_manager_error(e)
 
+    refs = _build_output_file_refs(svcs, job.id)
+
     # If job has no task plan or no tasks, it completes immediately
     if job.task_plan is None or not job.task_plan.tasks:
         try:
@@ -526,7 +615,7 @@ def start_job(job_id: str, svcs: Services = Depends(get_services)):
             pass
         return JobActionResponse(
             success=True,
-            job=_job_to_response(job),
+            job=_job_to_response(job, output_file_refs=refs),
             message="Job started (no tasks to execute)",
         )
 
@@ -541,13 +630,13 @@ def start_job(job_id: str, svcs: Services = Depends(get_services)):
             pass
         return JobActionResponse(
             success=False,
-            job=_job_to_response(job),
+            job=_job_to_response(job, output_file_refs=refs),
             message="Failed to start background execution",
         )
 
     return JobActionResponse(
         success=True,
-        job=_job_to_response(job),
+        job=_job_to_response(job, output_file_refs=refs),
         message="Job started",
     )
 
@@ -559,9 +648,10 @@ def pause_job(job_id: str, svcs: Services = Depends(get_services)):
         job = svcs.jobs.pause_job(job_id)
     except JobManagerError as e:
         _handle_job_manager_error(e)
+    refs = _build_output_file_refs(svcs, job.id)
     return JobActionResponse(
         success=True,
-        job=_job_to_response(job),
+        job=_job_to_response(job, output_file_refs=refs),
         message="Job paused",
     )
 
@@ -574,6 +664,8 @@ def resume_job(job_id: str, svcs: Services = Depends(get_services)):
     except JobManagerError as e:
         _handle_job_manager_error(e)
 
+    refs = _build_output_file_refs(svcs, job.id)
+
     # Start background execution
     started = _start_background_execution(svcs, job_id)
     if not started:
@@ -584,13 +676,13 @@ def resume_job(job_id: str, svcs: Services = Depends(get_services)):
             pass
         return JobActionResponse(
             success=False,
-            job=_job_to_response(job),
+            job=_job_to_response(job, output_file_refs=refs),
             message="Failed to start background execution",
         )
 
     return JobActionResponse(
         success=True,
-        job=_job_to_response(job),
+        job=_job_to_response(job, output_file_refs=refs),
         message="Job resumed",
     )
 
@@ -610,9 +702,10 @@ def cancel_job(job_id: str, svcs: Services = Depends(get_services)):
     # P1-03: signal the cooperative cancellation event so the
     # background thread stops at the next check point.
     svcs.execution.cancel_execution(job_id)
+    refs = _build_output_file_refs(svcs, job.id)
     return JobActionResponse(
         success=True,
-        job=_job_to_response(job),
+        job=_job_to_response(job, output_file_refs=refs),
         message="Job cancelled",
     )
 
@@ -649,10 +742,14 @@ def restart_job(job_id: str, svcs: Services = Depends(get_services)):
         else:
             config_obj = config
         # NOTE: Do NOT force use_cache=False — preserve source job's setting
+        pf = svcs.protection.compute_protection_fingerprint(
+            rule_set_ids=config_obj.protection.rule_set_ids,
+        )
         planner = TaskPlanner(
             config=config_obj,
             file_service=svcs.file_processing,
             cache=svcs.cache,
+            protection_fingerprint=pf,
         )
     else:
         config_obj = None
@@ -682,9 +779,10 @@ def restart_job(job_id: str, svcs: Services = Depends(get_services)):
         except ValueError:
             pass
 
+    refs = _build_output_file_refs(svcs, restart_job_obj.id)
     return JobActionResponse(
         success=True,
-        job=_job_to_response(restart_job_obj),
+        job=_job_to_response(restart_job_obj, output_file_refs=refs),
         message=f"Restart job created for {job_id} with {restart_job_obj.total_units} units",
     )
 
@@ -739,10 +837,14 @@ def retry_failed_job(job_id: str, svcs: Services = Depends(get_services)):
             config_obj = _build_config(svcs, config)
         else:
             config_obj = config
+        pf = svcs.protection.compute_protection_fingerprint(
+            rule_set_ids=config_obj.protection.rule_set_ids,
+        )
         planner = TaskPlanner(
             config=config_obj,
             file_service=svcs.file_processing,
             cache=svcs.cache,
+            protection_fingerprint=pf,
         )
     else:
         config_obj = None
@@ -766,9 +868,10 @@ def retry_failed_job(job_id: str, svcs: Services = Depends(get_services)):
             _handle_job_manager_error(e)
         _start_background_execution(svcs, retry_job.id)
 
+    refs = _build_output_file_refs(svcs, retry_job.id)
     return JobActionResponse(
         success=True,
-        job=_job_to_response(retry_job),
+        job=_job_to_response(retry_job, output_file_refs=refs),
         message=f"Retry job created with {len(failed_units)} failed units from {job_id}",
     )
 
@@ -784,9 +887,10 @@ def update_job_config(job_id: str, body: UpdateConfigRequest, svcs: Services = D
         job = svcs.jobs.update_job_config(job_id, body.config)
     except JobManagerError as e:
         _handle_job_manager_error(e)
+    refs = _build_output_file_refs(svcs, job.id)
     return JobActionResponse(
         success=True,
-        job=_job_to_response(job),
+        job=_job_to_response(job, output_file_refs=refs),
         message="Config updated",
     )
 

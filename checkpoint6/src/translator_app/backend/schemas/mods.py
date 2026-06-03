@@ -32,6 +32,7 @@ class ModInfoSchema(BaseModel):
     installed_path: Optional[str] = None
     install_action: str = "install"
     install_conflict: bool = False
+    is_self_installed: bool = False
 
 
 class ModDiscoveryRequest(BaseModel):

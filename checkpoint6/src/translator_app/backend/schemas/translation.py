@@ -14,6 +14,7 @@ class TranslationOptionsResponse(BaseModel):
     prompt_profiles: List[str] = []
     protection_strategies: List[str] = []
     validators: List[str] = []
+    rule_sets: List[dict] = []  # [{id, name, builtin}] - available rule sets
 
 
 # ---------------------------------------------------------------------------

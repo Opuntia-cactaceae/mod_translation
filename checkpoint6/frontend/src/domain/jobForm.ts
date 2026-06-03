@@ -24,6 +24,7 @@ export interface CreateJobFormModel {
   singleUserTemplate: string;
   logPrompts: boolean;
   protectionStrategy: string;
+  ruleSetIds: string[];
   validatorName: string;
   outputDir: string;
   outputFilenameSuffix: string;

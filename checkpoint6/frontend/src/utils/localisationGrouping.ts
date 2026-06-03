@@ -1,3 +1,17 @@
+/* ------------------------------------------------------------------ */
+/*  Stellaris-specific localisation file grouping                     */
+/*                                                                      */
+/*  Uses shared utilities from the grouping domain for:                 */
+/*    - getBasenameFamily (replaces old determinePrefix)                */
+/*    - detectStellarisLanguage (replaces old detectLanguageFromPath)   */
+/*                                                                      */
+/*  Public API is unchanged.                                            */
+/* ------------------------------------------------------------------ */
+
+import { basename } from '../domain/grouping/groupingPaths';
+import { getBasenameFamily } from '../domain/grouping/groupingFamilies';
+import { detectStellarisLanguage } from '../domain/grouping/groupingLanguage';
+
 export type LocalisationGroup = {
   id: string;
   label: string;
@@ -5,65 +19,24 @@ export type LocalisationGroup = {
   languages: string[];
 };
 
-function basename(path: string): string {
-  const parts = path.split('/');
-  return parts[parts.length - 1] || path;
-}
-
-/**
- * Strip the language suffix from a localisation filename stem.
- * E.g. "ms_est_blue_l_english" -> "ms_est_blue"
- *
- * Strategy: find the LAST occurrence of "_l_" in the stem and remove
- * everything from there to the end. This handles all known language
- * suffixes (_l_english, _l_russian, _l_braz_por, _l_simp_chinese, etc.)
- * without needing an explicit list.
- */
-function stripLanguageSuffix(stem: string): string {
-  const idx = stem.lastIndexOf('_l_');
-  if (idx !== -1) {
-    return stem.substring(0, idx);
-  }
-  return stem;
-}
-
 /**
  * Detect the language code from a localisation file path.
  * Returns the language part (e.g. "english", "simp_chinese") or null.
+ *
+ * Delegates to shared detectStellarisLanguage.
  */
 export function detectLanguageFromPath(path: string): string | null {
-  const match = path.match(/l_(\w+)\.yml$/);
-  return match ? match[1] : null;
-}
-
-/**
- * Determine the group prefix from a stripped stem.
- *
- * Rule: take the first 2 underscore-delimited parts.
- * If the stem has fewer than 2 parts, use the whole stem.
- *
- * Examples:
- *   "ms_est_blue"       -> "ms_est"
- *   "ms_ldr_iron"       -> "ms_ldr"
- *   "ms_civics"         -> "ms_civics"
- *   "ms_planet_buildings" -> "ms_planet"
- *   "something"         -> "something"
- */
-function determinePrefix(stripped: string): string {
-  const parts = stripped.split('_');
-  if (parts.length >= 2) {
-    return parts.slice(0, 2).join('_');
-  }
-  return parts[0];
+  return detectStellarisLanguage(path);
 }
 
 /**
  * Group an array of localisation file paths into LocalisationGroup[].
  *
- * Grouping algorithm:
+ * Algorithm (unchanged):
  * 1. Extract basename without extension.
  * 2. Strip the language suffix (everything from the last `_l_`).
- * 3. Determine the group prefix (first 2 underscore-delimited parts).
+ * 3. Determine the group prefix via shared getBasenameFamily
+ *    (first 2 underscore-delimited parts of the stripped stem).
  * 4. Collect files sharing the same prefix into one group.
  * 5. Sort groups by label, and files within each group by basename.
  */
@@ -77,11 +50,10 @@ export function groupLocalisationFiles(paths: string[]): LocalisationGroup[] {
     // Detect language
     const language = detectLanguageFromPath(path) || 'unknown';
 
-    // Strip language suffix to get the meaningful stem
-    const stripped = stripLanguageSuffix(stem);
-
-    // Determine group prefix
-    const prefix = determinePrefix(stripped);
+    // Determine group prefix using shared getBasenameFamily.
+    // getBasenameFamily strips extension + lang suffix, then takes first 2 parts.
+    // We pass the full path so it handles stripping internally.
+    const prefix = getBasenameFamily(path);
 
     // Accumulate into groups
     if (!groups.has(prefix)) {

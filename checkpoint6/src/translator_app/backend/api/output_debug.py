@@ -161,6 +161,7 @@ def get_output_file_debug(
             "validity_state": snapshot.analysis.validity_state,
             "diagnostics": snapshot.analysis.diagnostics,
             "history_count": snapshot.analysis.history_count,
+            "snapshot_analysis": snapshot.analysis.snapshot_analysis,
         },
         integrity={
             "current_source_hash": snapshot.integrity.current_source_hash,

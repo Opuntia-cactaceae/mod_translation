@@ -31,7 +31,7 @@ import logging
 import threading
 from collections import deque
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 
@@ -71,7 +71,7 @@ class RuntimeRawLogCollector:
     def append(self, job_id: str, level: str, message: str) -> None:
         """Append a raw log line to the job's ring buffer."""
         line = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "level": level,
             "message": message,
         }

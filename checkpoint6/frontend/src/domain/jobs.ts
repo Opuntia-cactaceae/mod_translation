@@ -18,6 +18,11 @@ export interface OutputFileInfo {
   outputPath: string;
 }
 
+export interface OutputFileRef {
+  id: string;
+  path: string;
+}
+
 export interface JobModel {
   id: string;
   name: string;
@@ -31,6 +36,7 @@ export interface JobModel {
   progress: number;
   createdAt?: string;
   updatedAt?: string;
+  completedAt?: string;
   /* --- Extended fields --- */
   errorMessage?: string;
   currentBatchIndex: number;
@@ -40,6 +46,7 @@ export interface JobModel {
   currentActivity?: string;
   /* --- Output files --- */
   outputFiles: string[];
+  outputFileRefs?: OutputFileRef[];
   outputRootDir?: string;
 }
 
@@ -66,6 +73,7 @@ export function mapJobResponse(dto: JobResponse): JobModel {
     progress: dto.progress,
     createdAt: dto.created_at || undefined,
     updatedAt: dto.updated_at || undefined,
+    completedAt: dto.completed_at || undefined,
     errorMessage: dto.error_message || undefined,
     currentBatchIndex: dto.current_batch_index ?? 0,
     totalBatches: dto.total_batches ?? 0,
@@ -73,6 +81,7 @@ export function mapJobResponse(dto: JobResponse): JobModel {
     resultSummary: legacyOutputFiles.length > 0 ? { outputFiles: legacyOutputFiles } : null,
     currentActivity: dto.current_activity || undefined,
     outputFiles: [...(dto.output_files ?? [])],
+    outputFileRefs: (dto.output_file_refs ?? []).map(ref => ({ id: ref.id, path: ref.path })),
     outputRootDir: dto.output_root_dir ?? undefined,
   };
 }

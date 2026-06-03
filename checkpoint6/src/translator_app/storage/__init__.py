@@ -9,6 +9,9 @@ from translator_app.storage.repositories import (
     RunHistoryRepository,
     CacheRepository,
 )
+from translator_app.storage.protection_snapshot_repository import (
+    ProtectionSnapshotRepository,
+)
 from translator_app.storage.migrations import MigrationManager
 from translator_app.storage.paths import (
     StoragePaths,
@@ -53,6 +56,7 @@ __all__ = [
     "DiagnosticsRepository",
     "RunHistoryRepository",
     "CacheRepository",
+    "ProtectionSnapshotRepository",
     "MigrationManager",
     # Centralized paths
     "StoragePaths",

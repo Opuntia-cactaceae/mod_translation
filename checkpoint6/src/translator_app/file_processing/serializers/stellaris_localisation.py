@@ -3,6 +3,7 @@ from translator_app.file_processing.models.parsed_file import ParsedGameFile, Se
 from translator_app.file_processing.models.entries import FileEntry
 from translator_app.file_processing.models.file_type import EntryType
 from translator_app.diagnostics.models import Diagnostic, DiagnosticLevel
+from translator_app.languages import resolve_stellaris_token
 
 
 class StellarisLocalisationSerializer:
@@ -31,12 +32,16 @@ class StellarisLocalisationSerializer:
             for e in parsed_file.entries
         )
 
+        # Resolve target language to Stellaris token for correct l_xxx: headers
+        target_stellaris = resolve_stellaris_token(target_language) if target_language else None
+        target_header_token = target_stellaris or target_language
+
         # Build language header — only write if entries don't already have one
         if not has_header_entry and parsed_file.header:
             if target_language and parsed_file.detected_language:
                 new_header = parsed_file.header.replace(
                     f"l_{parsed_file.detected_language}:",
-                    f"l_{target_language}:",
+                    f"l_{target_header_token}:",
                     1,
                 )
                 if new_header == parsed_file.header:
@@ -62,7 +67,7 @@ class StellarisLocalisationSerializer:
                 ):
                     new_raw = raw_line.replace(
                         f"l_{parsed_file.detected_language}:",
-                        f"l_{target_language}:",
+                        f"l_{target_header_token}:",
                         1,
                     )
                     if new_raw != raw_line:

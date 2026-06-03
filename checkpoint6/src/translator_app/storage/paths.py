@@ -56,6 +56,7 @@ ENV_TRACE_PATH = "TRANSLATOR_APP_TRACE_PATH"
 ENV_DISCOVERY_CACHE_PATH = "TRANSLATOR_APP_DISCOVERY_CACHE_PATH"
 ENV_RAW_RESPONSES_DIR = "TRANSLATOR_APP_RAW_RESPONSES_DIR"
 ENV_OUTPUT_DIR = "TRANSLATOR_APP_OUTPUT_DIR"
+ENV_PROVIDER_MODELS_PATH = "TRANSLATOR_APP_PROVIDER_MODELS_PATH"
 
 # ---------------------------------------------------------------------------
 # Package root → project root helper
@@ -95,6 +96,7 @@ class StoragePaths:
     discovery_cache_path: Optional[str] = None
     raw_responses_dir: Optional[str] = None
     output_dir: Optional[str] = None
+    provider_models_path: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +276,13 @@ def get_storage_paths() -> StoragePaths:
             data_dir,
             "outputs",
         ),
+        provider_models_path=_resolve_path(
+            ENV_PROVIDER_MODELS_PATH,
+            os.environ.get(ENV_PROVIDER_MODELS_PATH),
+            lambda: str(Path(data_dir) / "provider_models.json"),
+            data_dir,
+            "provider_models.json",
+        ),
     )
     return paths
 
@@ -419,6 +428,10 @@ def get_raw_responses_dir() -> Optional[str]:
 
 def get_output_dir() -> Optional[str]:
     return _get_cached_paths().output_dir
+
+
+def get_provider_models_path() -> Optional[str]:
+    return _get_cached_paths().provider_models_path
 
 
 def clear_paths_cache() -> None:

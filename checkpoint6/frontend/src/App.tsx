@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, createContext, useContext, useCallback } from 'react';
-import { Routes, Route, NavLink } from 'react-router-dom';
+import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
@@ -7,7 +7,8 @@ import GamePage from './pages/GamePage';
 import TranslationJobs from './pages/TranslationJobs';
 import TranslatedFiles from './pages/TranslatedFiles';
 import OutputFileEditor from './pages/OutputFileEditor';
-import Editor from './pages/Editor';
+import ProtectionRules from './pages/ProtectionRules';
+import PairingProjects from './pages/PairingProjects';
 import { api, ApiError } from './api/client';
 
 /* ------------------------------------------------------------------ */
@@ -16,12 +17,12 @@ import { api, ApiError } from './api/client';
 export interface Toast {
   id: number;
   message: string;
-  type: 'success' | 'error';
+  type: 'success' | 'error' | 'info' | 'warning';
 }
 
 interface ToastCtx {
   toast: Toast | null;
-  showToast: (message: string, type?: 'success' | 'error') => void;
+  showToast: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
 export const ToastContext = createContext<ToastCtx>({
@@ -51,7 +52,7 @@ export default function App() {
   const [toastKey, setToastKey] = useState(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' | 'warning' = 'success') => {
     const id = Date.now();
     setToast({ id, message, type });
     setToastKey(id);
@@ -95,11 +96,14 @@ export default function App() {
             <NavLink to="/jobs" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
               Translation Jobs
             </NavLink>
-            <NavLink to="/editor" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-              Editor / Trace
+            <NavLink to="/protection-rules" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+              Protection Rules
             </NavLink>
             <NavLink to="/translated-files" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
               Translated Files
+            </NavLink>
+            <NavLink to="/pairing-projects" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+              Pairing Projects
             </NavLink>
           </div>
         </nav>
@@ -112,7 +116,9 @@ export default function App() {
               <Route path="/jobs" element={<TranslationJobs />} />
               <Route path="/translated-files" element={<TranslatedFiles />} />
               <Route path="/translated-files/:outputFileId/editor" element={<OutputFileEditor />} />
-              <Route path="/editor" element={<Editor />} />
+              <Route path="/editor" element={<Navigate to="/translated-files" replace />} />
+              <Route path="/protection-rules" element={<ProtectionRules />} />
+              <Route path="/pairing-projects" element={<PairingProjects />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </ErrorBoundary>

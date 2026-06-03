@@ -7,7 +7,6 @@ from translator_app.backend.api.files import router as files_router, list_files 
 from translator_app.backend.api.file_processing import router as file_processing_router
 from translator_app.backend.api.translation_config import router as translation_config_router
 from translator_app.backend.api.jobs import router as jobs_router, list_jobs as list_jobs, get_job as get_job, create_job as create_job
-from translator_app.backend.api.editor import router as editor_router
 from translator_app.backend.api.cache import router as cache_router, get_cache_stats as get_cache_info, clear_cache as clear_cache
 from translator_app.backend.api.secrets import router as secrets_router
 from translator_app.backend.api.translation_plan import router as translation_plan_router
@@ -15,8 +14,12 @@ from translator_app.backend.api.descriptors import router as descriptors_router
 from translator_app.backend.api.install import router as install_router
 from translator_app.backend.api.mods import router as mods_router
 from translator_app.backend.api.output_files import router as output_files_router
-from translator_app.backend.api.output_editor import router as output_editor_router
 from translator_app.backend.api.draft_job_selection import router as draft_job_selection_router
+from translator_app.backend.api.provider_models import router as provider_models_router
+from translator_app.backend.api.protection_rules import router as protection_rules_router
+from translator_app.backend.api.protection_profiles import router as protection_profiles_router
+from translator_app.backend.api.protection_learning_file_source import router as protection_learning_file_source_router
+from translator_app.backend.api.rule_sets import router as rule_sets_router
 
 # Backward-compatible handler references (keep old api module imports working)
 get_health_handler = get_health
@@ -28,10 +31,14 @@ __all__ = [
     # routers
     "health_router", "app_state_router", "settings_router", "files_router",
     "file_processing_router", "translation_config_router", "jobs_router",
-    "editor_router", "cache_router", "secrets_router", "translation_plan_router",
+    "cache_router", "secrets_router", "translation_plan_router",
     "descriptors_router", "install_router", "mods_router", "output_files_router",
-    "output_editor_router",
     "draft_job_selection_router",
+    "provider_models_router",
+    "protection_rules_router",
+    "protection_profiles_router",
+    "protection_learning_file_source_router",
+    "rule_sets_router",
     # handlers
     "get_health", "get_app_state", "get_settings", "update_settings",
     "list_files", "read_file",

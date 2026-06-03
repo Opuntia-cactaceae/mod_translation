@@ -1,6 +1,8 @@
 """API endpoints for async output analysis jobs."""
 
 import json
+import logging
+import threading
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -13,6 +15,9 @@ from translator_app.backend.schemas.output_files import (
     OutputAnalysisJobResponse,
 )
 from translator_app.outputs.analysis.jobs import CreateOutputAnalysisJobRequest
+from translator_app.outputs.analysis.jobs import OutputAnalysisJobStatus
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["output-analysis-jobs"])
 
@@ -64,6 +69,41 @@ def _job_to_response(job) -> OutputAnalysisJobResponse:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_worker_alive(svcs: Services) -> bool:
+    """Ensure the analysis worker thread is alive and accepting jobs.
+
+    If the worker is not alive, attempts to start it.  Returns True if
+    the worker is (now) alive, False otherwise.
+    """
+    if svcs.analysis_worker.is_alive():
+        return True
+    logger.warning("Analysis worker thread is not alive — attempting restart")
+    try:
+        svcs.analysis_worker.start()
+        return True
+    except Exception:
+        logger.exception("Failed to restart analysis worker")
+        return False
+
+
+def _run_job_in_background(svcs: Services, job_id: str) -> None:
+    """Run an analysis job in a background thread as a fallback.
+
+    Used when the primary worker thread is unavailable.  The thread
+    calls ``run_job`` directly on the worker so all job lifecycle
+    (mark_running, update_progress, mark_completed) is handled.
+    """
+    def _run():
+        try:
+            svcs.analysis_worker.run_job(job_id)
+        except Exception:
+            logger.exception(
+                "Inline background analysis job %s failed", job_id,
+            )
+    t = threading.Thread(target=_run, daemon=True, name=f"analysis-inline-{job_id[:8]}")
+    t.start()
+
+
 @router.post(
     "/output-analysis-jobs",
     response_model=OutputAnalysisJobResponse,
@@ -73,9 +113,10 @@ def create_analysis_job(
     body: CreateOutputAnalysisJobRequestSchema,
     svcs: Services = Depends(get_services),
 ):
-    """Create a new async output analysis job.
+    """Create and start a new output analysis job.
 
-    The job will be processed in the background by the analysis worker.
+    The job is submitted to the background analysis worker.  If the
+    worker is not available, the job is run inline in a fallback thread.
     """
     # Validate scope
     if body.scope_type not in ("job", "mod", "group", "selected"):
@@ -124,7 +165,67 @@ def create_analysis_job(
     )
 
     job = svcs.analysis_job_service.create_job(request)
-    svcs.analysis_worker.submit(job.id)
+
+    # Submit to worker (or fallback to inline thread)
+    if _ensure_worker_alive(svcs):
+        svcs.analysis_worker.submit(job.id)
+    else:
+        logger.warning(
+            "Analysis worker unavailable — running job %s inline", job.id,
+        )
+        _run_job_in_background(svcs, job.id)
+
+    return _job_to_response(job)
+
+
+# ---------------------------------------------------------------------------
+# Start endpoint — explicitly start a previously created job
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/output-analysis-jobs/{analysis_job_id}/start",
+    response_model=OutputAnalysisJobResponse,
+)
+def start_analysis_job(
+    analysis_job_id: str,
+    svcs: Services = Depends(get_services),
+):
+    """Explicitly start (or re-submit) an analysis job.
+
+    If the job is already in a terminal state (completed / failed /
+    cancelled) the request is a no-op and the existing job is returned.
+    Otherwise the job is submitted to the analysis worker for processing.
+    """
+    job = svcs.analysis_job_service.get_job(analysis_job_id)
+    if not job:
+        raise APIError(
+            code=NOT_FOUND,
+            message=f"Analysis job not found: {analysis_job_id}",
+            status_code=404,
+        )
+
+    if job.is_terminal:
+        logger.debug(
+            "Analysis job %s is already terminal (%s), start is a no-op",
+            analysis_job_id, job.status,
+        )
+        return _job_to_response(job)
+
+    # Re-queue if previously running or queued (e.g. after worker restart)
+    if job.status == OutputAnalysisJobStatus.RUNNING.value:
+        svcs.analysis_job_service._repo.mark_queued(analysis_job_id)
+
+    if _ensure_worker_alive(svcs):
+        svcs.analysis_worker.submit(analysis_job_id)
+    else:
+        logger.warning(
+            "Analysis worker unavailable — running job %s inline", analysis_job_id,
+        )
+        _run_job_in_background(svcs, analysis_job_id)
+
+    # Reload job to reflect updated state
+    job = svcs.analysis_job_service.get_job(analysis_job_id)
     return _job_to_response(job)
 
 

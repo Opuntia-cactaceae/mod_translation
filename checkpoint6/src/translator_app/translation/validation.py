@@ -1,17 +1,21 @@
-"""Translation Validator — delegates to translator_benchmark validators.
+"""Translation Validator — delegates to benchmark validators and rule-set protection.
 
-Supports:
-    * ``composite`` — JSON array parsing, batch length check, markdown fence stripping.
-    * ``none`` / empty — identity (always valid).
-    * Any validator registered in ``translator_benchmark.validation.validation_registry``.
+Performs:
+    * JSON array parsing and length check (composite validator)
+    * Placeholder/token preservation check via ``ProtectionEngine``
+    * Generic non-empty validation as fallback
+
+The placeholder preservation check works through **protection state** (the
+``<PH id="r{N}"/>`` placeholders in the text).  No hardcoded regex patterns
+are used — all protection patterns live in rule sets.
 """
 
 from typing import List, Optional, Dict, Any
 
 from translator_app.diagnostics.models import ValidationResult, Diagnostic, DiagnosticLevel
+from translator_app.protection.engine import PROTECTED_PH_RE, PLACEHOLDER_RE
 from translator_benchmark.validation.validation_registry import get_response_validator
 from translator_benchmark.config.schema import ValidationConfig as BenchmarkValidationConfig
-from translator_benchmark.validation.placeholder_guard import extract_placeholders, compare_placeholders
 
 
 class TranslationValidator:
@@ -19,7 +23,7 @@ class TranslationValidator:
 
     Performs:
         * JSON array parsing and length check (composite validator)
-        * Placeholder/token preservation check (placeholder_guard)
+        * Placeholder/token preservation check (via ``<PH id="r{N}"/>`` tags)
         * Generic non-empty validation as fallback
     """
 
@@ -70,18 +74,38 @@ class TranslationValidator:
         if not source or not source.strip():
             return result
 
-        # 3. Placeholder preservation check
-        source_placeholders = extract_placeholders(source)
-        if source_placeholders:
-            lost = compare_placeholders(source, target)
-            if lost:
+        # 3. Placeholder preservation check (rule-set-based)
+        #    Count protected placeholders in source vs target
+        source_ph_count = len(PROTECTED_PH_RE.findall(source))
+        target_ph_count = len(PROTECTED_PH_RE.findall(target))
+
+        if source_ph_count > 0:
+            if target_ph_count < source_ph_count:
                 result.is_valid = False
-                for p in lost:
-                    result.add_diagnostic(Diagnostic(
-                        level=DiagnosticLevel.ERROR,
-                        message=f"Lost protected placeholder/token: {p}",
-                        code="PLACEHOLDER_LOST",
-                    ))
+                result.add_diagnostic(Diagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    message=f"Lost {source_ph_count - target_ph_count} protected placeholder(s) "
+                            f"(source had {source_ph_count}, target has {target_ph_count})",
+                    code="PLACEHOLDER_LOST",
+                ))
+
+            # Check for mutated placeholder IDs (missing IDs that were in source)
+            source_ids = set(PLACEHOLDER_RE.findall(source))
+            target_ids = set(PLACEHOLDER_RE.findall(target))
+            lost_ids = source_ids - target_ids
+            for ph_id in sorted(lost_ids):
+                result.is_valid = False
+                result.add_diagnostic(Diagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    message=f"Lost protected placeholder: <PH id=\"{ph_id}\"/>",
+                    code="PLACEHOLDER_LOST",
+                ))
+
+        # NOTE: PLACEHOLDER_LEAKED detection has been moved to the adapter
+        # layer (_detect_and_handle_restore_leaks in core_adapter.py) where
+        # it is strategy-aware and can fail the unit properly.  A global
+        # regex-based check here would be wrong because it does not know
+        # whether protection is enabled or which strategy is active.
 
         # 4. Benchmark validator check (JSON parsing, etc.)
         if self._benchmark_validator is not None:

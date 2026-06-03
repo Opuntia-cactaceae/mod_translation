@@ -50,7 +50,7 @@ class TranslationDefaults:
     default_batch_size: int = 10
     default_use_cache: bool = True
     default_save_raw_responses: bool = False
-    default_protection_strategy: str = "xml_placeholders"
+    default_protection_strategy: str = "rule_set"
     default_validator: str = "composite"
     default_allow_fallback_on_json_error: bool = True
 

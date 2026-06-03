@@ -3,8 +3,9 @@
 Replaces game-specific token patterns with ``<PH id="k{N}"/>`` placeholders
 so that LLMs can translate the surrounding text without corrupting tokens.
 
-Supports the same token patterns as the original checkpoint3
-``token_utils.py``, now self-contained inside checkpoint6.
+The token patterns are derived from ``BUILTIN_RULES_DATA`` in
+``translator_app.protection.builtin_rules`` — the single source of truth.
+No hardcoded regex patterns are defined in this module.
 
 Supported patterns:
 
@@ -19,20 +20,19 @@ Supported patterns:
 """
 
 import re
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
-TOKEN_PATTERNS = [
-    r"\$[A-Za-z0-9_]+\$",                 # $VAR$
-    r"\[.+?\]",                            # [Root.GetName]
-    r"£[A-Za-z0-9_]+£",                    # £food£
-    r"§[A-Za-z0-9]|\§!",                   # §Y … §!
-    r"§[A-Za-z0-9](?:.|[\r\n])*?§!",       # секции §Y…§!
-    r"\{[A-Za-z0-9_.:-]+\}",               # {VALUE}
-    r"%(?:\d+\$)?[sd]",                    # printf
-    r"\\n",                                 # явные переносы
-]
+from translator_app.protection.builtin_rules import BUILTIN_RULES_DATA
+from translator_app.protection.engine import (
+    PlaceholderLeakInfo,
+    register_strategy_detector,
+)
 
-TOKEN_REGEX = re.compile("|".join(f"({p})" for p in TOKEN_PATTERNS), re.DOTALL)
+# Combined regex built from the canonical builtin rules (single source of truth)
+TOKEN_REGEX = re.compile(
+    "|".join(f"({rule['pattern']})" for rule in BUILTIN_RULES_DATA),
+    re.DOTALL,
+)
 
 
 def protect_tokens(text: str) -> Tuple[str, Dict[str, str]]:
@@ -90,3 +90,37 @@ def restore_tokens(text: str, mapping: Dict[str, str]) -> str:
     """
     regex = re.compile(pattern, re.IGNORECASE | re.VERBOSE | re.DOTALL)
     return regex.sub(lambda m: mapping.get(m.group(1), m.group(0)), text)
+
+
+# ---------------------------------------------------------------------------
+# Strategy-aware leak detection for "legacy_game_tokens"
+# ---------------------------------------------------------------------------
+
+_LEGACY_PH_RE = re.compile(r'<PH\s+id="k(\d+)"\s*/>')
+
+
+def detect_legacy_game_tokens_leaks(
+    text: str,
+    mapping: Dict[str, str],
+) -> List[PlaceholderLeakInfo]:
+    """Detect unrestored ``<PH id="k{N}"/>`` placeholders.
+
+    This is the detector for the benchmark ``"legacy_game_tokens"``
+    protection strategy.  Scans *text* for ``<PH id="k{N}"/>`` tags
+    whose IDs are missing from the restore *mapping*.
+    """
+    leaks: List[PlaceholderLeakInfo] = []
+    for m in _LEGACY_PH_RE.finditer(text):
+        ph_id = f"k{m.group(1)}"
+        if ph_id not in mapping:
+            leaks.append(PlaceholderLeakInfo(
+                placeholder_id=ph_id,
+                raw_match=m.group(0),
+                strategy_name="legacy_game_tokens",
+                mapping_size=len(mapping),
+            ))
+    return leaks
+
+
+# Register with the engine's dispatch table
+register_strategy_detector("legacy_game_tokens", detect_legacy_game_tokens_leaks)

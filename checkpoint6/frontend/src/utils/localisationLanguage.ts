@@ -1,56 +1,8 @@
+import { resolveCode, resolveDisplayName } from './languageRegistry';
+
 /* ------------------------------------------------------------------ */
 /*  Localisation language detection and filtering utilities            */
 /* ------------------------------------------------------------------ */
-
-/**
- * Mapping from Stellaris localisation file language suffixes to
- * short ISO-like codes used throughout the application (src_lang, etc.).
- */
-const LANG_MAP: Record<string, string> = {
-  english: 'en',
-  french: 'fr',
-  german: 'de',
-  russian: 'ru',
-  spanish: 'es',
-  polish: 'pl',
-  japanese: 'ja',
-  korean: 'ko',
-  simp_chinese: 'zh',
-  braz_por: 'pt-BR',
-  brazilian: 'pt-BR',
-  portuguese: 'pt',
-  italian: 'it',
-  dutch: 'nl',
-  swedish: 'sv',
-  czech: 'cs',
-  hungarian: 'hu',
-  turkish: 'tr',
-  arabic: 'ar',
-};
-
-/**
- * Reverse mapping from short code to human-readable display name.
- */
-const CODE_TO_DISPLAY: Record<string, string> = {
-  en: 'English',
-  fr: 'French',
-  de: 'German',
-  ru: 'Russian',
-  es: 'Spanish',
-  pl: 'Polish',
-  ja: 'Japanese',
-  ko: 'Korean',
-  zh: 'Simplified Chinese',
-  'pt-BR': 'Brazilian Portuguese',
-  pt: 'Portuguese',
-  it: 'Italian',
-  nl: 'Dutch',
-  sv: 'Swedish',
-  cs: 'Czech',
-  hu: 'Hungarian',
-  tr: 'Turkish',
-  ar: 'Arabic',
-};
 
 /**
  * Detect the raw localisation language suffix from a file path.
@@ -79,11 +31,7 @@ export function detectLocalisationLanguage(path: string): string | null {
  */
 export function normaliseLocalisationLanguage(language: string | null): string | null {
   if (!language) return null;
-  // Already a short code (reverse lookup succeeds)?
-  if (CODE_TO_DISPLAY[language] !== undefined) {
-    return language;
-  }
-  return LANG_MAP[language] ?? null;
+  return resolveCode(language);
 }
 
 /**
@@ -131,7 +79,7 @@ export function groupFilesByLanguage(paths: string[]): Record<string, string[]> 
  * Falls back to the code itself if no display name is registered.
  */
 export function displayNameForLanguage(code: string): string {
-  return CODE_TO_DISPLAY[code] ?? code;
+  return resolveDisplayName(code);
 }
 
 /**

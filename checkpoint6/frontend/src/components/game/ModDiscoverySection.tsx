@@ -103,28 +103,32 @@ export function ModDiscoverySection({ onModsDiscovered, hasMods }: ModDiscoveryS
             }}
           />
         </div>
-        <div className="form-actions">
+        <div className="mod-discovery-actions">
           {defaultModsDir && (
-            <>
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setScanPaths(defaultModsDir);
-                  setScanPathsDirty(true);
-                }}
-                type="button"
-              >
-                Use default mods folder
-              </button>
-              <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', alignSelf: 'center' }}>
-                Default path is taken from Settings {'->'} Downloaded mods directory.
-              </span>
-            </>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setScanPaths(defaultModsDir);
+                setScanPathsDirty(true);
+              }}
+              type="button"
+            >
+              Use default mods folder
+            </button>
           )}
+          <button
+            className="btn btn-primary"
+            onClick={handleDiscover}
+            disabled={loading}
+          >
+            {loading ? 'Scanning...' : (hasMods ? 'Refresh / Rediscover' : 'Scan / Discover')}
+          </button>
         </div>
-        <button className="btn btn-primary" onClick={handleDiscover} disabled={loading}>
-          {loading ? 'Scanning...' : (hasMods ? 'Refresh / Rediscover' : 'Scan / Discover')}
-        </button>
+        {defaultModsDir && (
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '0.5rem' }}>
+            Default path is taken from Settings {'->'} Downloaded mods directory.
+          </div>
+        )}
         {scannedPaths.length > 0 && (
           <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
             Scanned: {scannedPaths.join(', ')}

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import type { CreateJobFormModel, TranslationPreviewModel } from '../../domain';
 import { detectSourceLangFromPaths, normalizePathLines } from '../../domain/jobFormHelpers';
 import { getCreateJobProblems } from '../../domain/jobValidation';
-import type { ModInfoSchema, GameOption, TranslationProfile, ApiKeyResponse, EffectivePromptResponse, PreviewPromptResponse } from '../../api/types';
+import type { ModInfoSchema, GameOption, TranslationProfile, ApiKeyResponse, EffectivePromptResponse, PreviewPromptResponse, DraftSelectionGroup } from '../../api/types';
 import { api } from '../../App';
 import type { FoundFile } from '../../components';
 import type { CreateJobFormValues } from './useCreateJobFlow';
@@ -16,11 +16,8 @@ import { useCreateJobGames } from './useCreateJobGames';
 import { applyProfileToForm } from './useCreateJobProfileApplication';
 import { usePersistentState } from '../usePersistentState';
 import { STORAGE_KEYS } from '../../utils/storageKeys';
-import { useDraftJobSelection } from '../../contexts/DraftJobSelectionContext';
-import {
-  groupFilesByLanguage,
-  filterFilesByLanguage,
-} from '../../utils/localisationLanguage';
+import { useDraftJobSelection, type DraftFileMeta } from '../../contexts/DraftJobSelectionContext';
+import { dedupeMods } from '../../utils/dedupeMods';
 
 /* ------------------------------------------------------------------ */
 /*  Draft types                                                        */
@@ -28,10 +25,6 @@ import {
 
 export interface CreateJobDraft {
   selectedGameId?: string;
-  selectedModKey?: string;
-  selectedModName?: string;
-  showOnlySelectedLanguage?: boolean;
-  selectedModSourceLanguage?: string;
   filePaths?: string;
   filePathList?: string[];
   addedPaths?: string[];
@@ -50,6 +43,7 @@ export interface CreateJobDraft {
   // --- Advanced config draft fields ---
   promptProfileName?: string;
   protectionStrategy?: string;
+  ruleSetIds?: string[];
   validatorName?: string;
   outputDir?: string;
   outputFilenameSuffix?: string;
@@ -61,29 +55,13 @@ export interface CreateJobDraft {
   timeoutSec?: number;
   maxCompletionTokens?: number;
   saveRawResponses?: boolean;
-  // --- Prompt override fields (TASK 4 persistence) ---
+  // --- Prompt override fields ---
   promptOverrideEnabled?: boolean;
   batchSystemPrompt?: string;
   batchUserTemplate?: string;
   singleSystemPrompt?: string;
   singleUserTemplate?: string;
   logPrompts?: boolean;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Language helpers                                                   */
-/* ------------------------------------------------------------------ */
-
-function getAvailableLanguages(paths: string[]): string[] {
-  const groups = groupFilesByLanguage(paths);
-  return Object.keys(groups).filter(l => l !== 'unknown').sort();
-}
-
-function getDefaultLangForMod(paths: string[]): string {
-  const langs = getAvailableLanguages(paths);
-  if (langs.length === 0) return 'en';
-  if (langs.includes('en')) return 'en';
-  return langs[0];
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,12 +112,9 @@ export interface CreateJobFormViewModel {
 
   // --- Mod selection ---
   mods: ModInfoSchema[];
-  /** Mods filtered by the currently selected game */
+  /** Mods filtered by the currently selected game, deduplicated. */
   filteredMods: ModInfoSchema[];
   modsLoading: boolean;
-  selectedMod: ModInfoSchema | null;
-  handleSelectMod: (mod: ModInfoSchema) => void;
-  handleClearSelection: () => void;
 
   // --- Game filter ---
   games: GameOption[];
@@ -148,15 +123,7 @@ export interface CreateJobFormViewModel {
   selectedGameId: string;
   handleGameChange: (gameId: string) => void;
 
-  // --- Language filter ---
-  showOnlySelectedLanguage: boolean;
-  setShowOnlySelectedLanguage: (v: boolean) => void;
-  selectedLanguage: string;
-  setSelectedLanguage: (v: string) => void;
-  availableLanguages: string[];
-
   // --- Derived / loaded state ---
-  modFromQuery: string | null;
   gameConfig: Record<string, unknown> | null;
 
   // --- Actions ---
@@ -164,11 +131,11 @@ export interface CreateJobFormViewModel {
   handlePreviewPlan: () => void;
   handleCreateJob: () => Promise<void>;
 
-  // --- Effective prompt (TASK 2) ---
+  // --- Effective prompt ---
   effectivePrompt: EffectivePromptResponse | null;
   effectivePromptLoading: boolean;
 
-  // --- Prompt preview (TASK 7) ---
+  // --- Prompt preview ---
   previewPromptData: PreviewPromptResponse | null;
   previewPromptMode: 'batch' | 'single';
   setPreviewPromptMode: (mode: 'batch' | 'single') => void;
@@ -189,10 +156,38 @@ export interface CreateJobFormViewModel {
   selectProfileDirect: (id: string) => void;
   showProfileConfirm: boolean;
   profileConfirmType: 'apply' | 'clear';
-  /** Non-empty when a mod is selected and the pending profile targets a different game */
-  profileGameWarning: string;
   confirmProfileApply: () => void;
   cancelProfileConfirm: () => void;
+
+  // --- Draft job selection (backend-driven) ---
+  /** Grouped file tree from backend draft state. */
+  draftGrouped: DraftSelectionGroup[];
+  /** Per-file metadata (modId, modName) keyed by normalized path. */
+  draftMeta: Record<string, DraftFileMeta>;
+  /** Flat list of draft file paths. */
+  draftFiles: string[];
+  /** Diagnostics/warnings from backend draft state. */
+  draftDiagnostics: Array<{ level: string; code: string; message: string }>;
+  /** Number of files in the draft. */
+  draftFileCount: number;
+  /** Whether draft is loading from backend. */
+  draftLoading: boolean;
+  /** Error message from the last draft API mutation, or null. */
+  draftError: string | null;
+
+  /** Currently selected mod paths for multi-add. */
+  selectedModPaths: string[];
+  /** Set selected mod paths. */
+  setSelectedModPaths: (paths: string[]) => void;
+
+  /** Add localisation files from the selected mods via backend. */
+  handleAddModFiles: () => Promise<void>;
+  /** Search and add localisation files via backend. */
+  handleSearchAndAdd: () => Promise<void>;
+  /** Remove a single file from the draft (calls backend DELETE). */
+  handleRemoveDraftFile: (path: string) => Promise<void>;
+  /** Remove multiple files from the draft (batch DELETE). */
+  handleRemoveDraftFiles: (paths: string[]) => Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -217,6 +212,7 @@ function buildForm(
     apiKeyIds: fields.apiKeyIds,
     promptProfileName: fields.promptProfileName,
     protectionStrategy: fields.protectionStrategy,
+    ruleSetIds: fields.ruleSetIds,
     validatorName: fields.validatorName,
     outputDir: fields.outputDir,
     outputFilenameSuffix: fields.outputFilenameSuffix,
@@ -255,6 +251,7 @@ function buildFormValues(
     apiKeyIds: fields.apiKeyIds,
     promptProfileName: fields.promptProfileName,
     protectionStrategy: fields.protectionStrategy,
+    ruleSetIds: fields.ruleSetIds,
     validatorName: fields.validatorName,
     outputDir: fields.outputDir,
     outputFilenameSuffix: fields.outputFilenameSuffix,
@@ -279,23 +276,15 @@ function buildFormValues(
 function buildDraftFromState(
   opts: {
     gamesState: { selectedGameId: string };
-    modsState: { selectedMod: ModInfoSchema | null };
-    showOnlySelectedLanguage: boolean;
-    selectedLanguage: string;
     paths: { filePaths: string; filePathList: string[]; addedPaths: Set<string> };
     fields: UseCreateJobFieldsReturn;
     createFlow: { selectedProfileId: string };
     gameConfig: Record<string, unknown> | null;
-    modFromQuery: string | null;
   },
 ): CreateJobDraft {
-  const { gamesState, modsState, showOnlySelectedLanguage, selectedLanguage, paths, fields, createFlow, gameConfig, modFromQuery } = opts;
+  const { gamesState, paths, fields, createFlow, gameConfig } = opts;
   return {
     selectedGameId: gamesState.selectedGameId || undefined,
-    selectedModKey: modsState.selectedMod?.mod_id,
-    selectedModName: modsState.selectedMod?.name,
-    showOnlySelectedLanguage,
-    selectedModSourceLanguage: selectedLanguage,
     filePaths: paths.filePaths,
     filePathList: paths.filePathList,
     addedPaths: Array.from(paths.addedPaths),
@@ -310,9 +299,10 @@ function buildDraftFromState(
     useCache: fields.useCache,
     selectedProfileId: createFlow.selectedProfileId,
     gameConfig,
-    sourceName: modFromQuery,
+    sourceName: null,
     promptProfileName: fields.promptProfileName || undefined,
     protectionStrategy: fields.protectionStrategy || undefined,
+    ruleSetIds: fields.ruleSetIds.length > 0 ? fields.ruleSetIds : undefined,
     validatorName: fields.validatorName || undefined,
     outputDir: fields.outputDir || undefined,
     outputFilenameSuffix: fields.outputFilenameSuffix || undefined,
@@ -369,8 +359,6 @@ export function useCreateJobForm(
 
   // Keep local path state in sync with the shared context when the
   // draft changes from OUTSIDE the form (e.g. from ModListSection).
-  // A ref tracks whether the current render was triggered by an
-  // internal mutation to avoid redundant replacePaths loops.
   const internalDraftChangeRef = useRef(0);
 
   useEffect(() => {
@@ -388,12 +376,9 @@ export function useCreateJobForm(
   });
 
   const [gameConfig, setGameConfig] = useState<Record<string, unknown> | null>(null);
-  const [modFromQuery, setModFromQuery] = useState<string | null>(null);
 
   // =================================================================
   //  Wrapped path operations — sync React state with draft_job_files
-  //  localStorage so that removing a file or editing the textarea is
-  //  reflected in the "source of truth" draft storage.
   // =================================================================
 
   const handleRemovePath = useCallback((path: string) => {
@@ -455,7 +440,6 @@ export function useCreateJobForm(
     setPreviewPromptLoading(true);
     try {
       const sampleTexts = ['Sample text for preview'];
-      // Build the prompt dict from effective or override values
       const promptDict: Record<string, unknown> = {
         profile_name: fields.promptProfileName || createFlow.selectedProfileId || '',
       };
@@ -524,7 +508,6 @@ export function useCreateJobForm(
   const [profileConfirmType, setProfileConfirmType] = useState<'apply' | 'clear'>('apply');
 
   // Sync the select value when selectedProfileId changes externally
-  // (e.g. draft restore, initial load)
   useEffect(() => {
     setProfileSelectValue(createFlow.selectedProfileId);
   }, [createFlow.selectedProfileId]);
@@ -559,8 +542,7 @@ export function useCreateJobForm(
       createFlow.setSelectedProfileId('');
     } else {
       // Apply profile config unconditionally (all-or-nothing)
-      // Pass selectedMod to prevent game/file_handler desync when a mod is active
-      applyProfileToForm(profiles, pendingProfileId, fields.fieldSetters, setGameConfig, modsState.selectedMod);
+      applyProfileToForm(profiles, pendingProfileId, fields.fieldSetters, setGameConfig);
       createFlow.setSelectedProfileId(pendingProfileId);
     }
 
@@ -568,7 +550,7 @@ export function useCreateJobForm(
     setProfileSelectValue(pendingProfileId);
     setShowProfileConfirm(false);
     setPendingProfileId(null);
-  }, [pendingProfileId, profiles, fields.fieldSetters, createFlow.setSelectedProfileId, setGameConfig, modsState.selectedMod]);
+  }, [pendingProfileId, profiles, fields.fieldSetters, createFlow.setSelectedProfileId, setGameConfig]);
 
   const cancelProfileConfirm = useCallback(() => {
     setShowProfileConfirm(false);
@@ -582,44 +564,74 @@ export function useCreateJobForm(
   }, [createFlow.setSelectedProfileId]);
 
   // =================================================================
-  //  Language filter state
-  // =================================================================
-
-  const [showOnlySelectedLanguage, setShowOnlySelectedLanguage] =
-    usePersistentState<boolean>(STORAGE_KEYS.createJobDraft + '.showOnly', true);
-
-  const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
-
-  // Compute available languages from selected mod's localisation paths
-  const availableLanguages = modsState.selectedMod
-    ? getAvailableLanguages(modsState.selectedMod.localisation_paths)
-    : [];
-
-  // =================================================================
   //  Game filter
   // =================================================================
 
-  /** Mods filtered by the currently selected game */
+  /** Mods filtered by the currently selected game, deduplicated. */
   const filteredMods = gamesState.selectedGameId
-    ? modsState.mods.filter(m => m.game_id === gamesState.selectedGameId)
-    : modsState.mods;
+    ? dedupeMods(modsState.mods.filter(m => m.game_id === gamesState.selectedGameId))
+    : dedupeMods(modsState.mods);
 
   const handleGameChange = useCallback(
     (gameId: string) => {
       gamesState.setSelectedGameId(gameId);
-      // If the selected mod doesn't belong to the new game, clear selection
-      if (modsState.selectedMod && modsState.selectedMod.game_id !== gameId) {
-        modsState.setSelectedMod(null);
-        setSelectedLanguage('en');
-        internalDraftChangeRef.current++;
-        paths.replacePaths([]);
-        ctx.clearFiles();
-        fileSearch.setSearchQuery('');
-        fileSearch.setFoundFiles([]);
-      }
+      // Clear file state when game changes
+      internalDraftChangeRef.current++;
+      paths.replacePaths([]);
+      ctx.clearFiles();
+      fileSearch.setSearchQuery('');
+      fileSearch.setFoundFiles([]);
     },
-    [modsState.selectedMod],
+    [],
   );
+
+  // =================================================================
+  //  Draft job selection — multi-mod, visual view, backend handlers
+  // =================================================================
+
+  /** Mod paths selected for multi-add. */
+  const [selectedModPaths, setSelectedModPaths] = useState<string[]>([]);
+
+  /** Add localisation files from the selected mods via backend. */
+  const handleAddModFiles = useCallback(async () => {
+    if (selectedModPaths.length === 0) return;
+    try {
+      // Send paths directly to avoid mod_id aliasing issues.
+      await ctx.addFilesFromMods([], 'stellaris_localisation', 'english', selectedModPaths);
+      setSelectedModPaths([]);
+    } catch {
+      showToast('Failed to add mod files', 'error');
+    }
+  }, [selectedModPaths, ctx.addFilesFromMods, showToast]);
+
+  /** Search and add localisation files via backend. */
+  const handleSearchAndAdd = useCallback(async () => {
+    const roots = fileSearch.searchQuery.split('\n').map(s => s.trim()).filter(Boolean);
+    if (roots.length === 0) return;
+    try {
+      await ctx.searchAndAddFiles(roots, 'stellaris_localisation', undefined, true);
+      fileSearch.setSearchQuery('');
+      fileSearch.setFoundFiles([]);
+    } catch {
+      showToast('Failed to search and add files', 'error');
+    }
+  }, [fileSearch.searchQuery, ctx.searchAndAddFiles, showToast]);
+
+  /** Remove a single file and sync local paths state. */
+  const handleRemoveDraftFile = useCallback(async (path: string) => {
+    internalDraftChangeRef.current++;
+    paths.removePath(path);
+    await ctx.removeFile(path);
+  }, [paths.removePath, ctx.removeFile]);
+
+  /** Remove multiple files in batch and sync local paths. */
+  const handleRemoveDraftFiles = useCallback(async (filePaths: string[]) => {
+    internalDraftChangeRef.current++;
+    for (const p of filePaths) {
+      paths.removePath(p);
+    }
+    await ctx.removeFiles(filePaths);
+  }, [paths.removePath, ctx.removeFiles]);
 
   // =================================================================
   //  Draft persistence
@@ -657,13 +669,10 @@ export function useCreateJobForm(
       // Pending translation takes priority — mark draft as consumed
       draftRestoredRef.current = true;
     }
-    if (createFlow.pendingSourceName) {
-      setModFromQuery(createFlow.pendingSourceName);
-    }
     if (createFlow.pendingGameConfig) {
       setGameConfig(createFlow.pendingGameConfig);
     }
-  }, [createFlow.pendingFiles, createFlow.pendingSourceName, createFlow.pendingGameConfig]);
+  }, [createFlow.pendingFiles, createFlow.pendingGameConfig]);
 
   // =================================================================
   //  Restore draft on mount (only if no pending translation)
@@ -688,11 +697,6 @@ export function useCreateJobForm(
       gamesState.setSelectedGameId(draft.selectedGameId);
     }
 
-    // NOTE: Path restoration has moved to a separate deferred effect
-    // (see "Deferred draft path restore" below) that waits for the
-    // shared context to finish loading before deciding whether to
-    // restore from localStorage or use live context data.
-
     // Restore scalar fields
     if (draft.jobName !== undefined) fields.setFormField('jobName', draft.jobName);
     if (draft.srcLang !== undefined) fields.setFormField('srcLang', draft.srcLang);
@@ -707,6 +711,7 @@ export function useCreateJobForm(
     // Restore advanced config fields from draft
     if (draft.promptProfileName !== undefined) fields.setFormField('promptProfileName', draft.promptProfileName);
     if (draft.protectionStrategy !== undefined) fields.setFormField('protectionStrategy', draft.protectionStrategy);
+    if (draft.ruleSetIds !== undefined) fields.setFormField('ruleSetIds', draft.ruleSetIds);
     if (draft.validatorName !== undefined) fields.setFormField('validatorName', draft.validatorName);
     if (draft.outputDir !== undefined) fields.setFormField('outputDir', draft.outputDir);
     if (draft.outputFilenameSuffix !== undefined) fields.setFormField('outputFilenameSuffix', draft.outputFilenameSuffix);
@@ -732,7 +737,7 @@ export function useCreateJobForm(
       createFlow.setSelectedProfileId(draft.selectedProfileId);
       // Apply profile config on draft restore (no confirmation needed)
       if (profiles.length > 0) {
-        applyProfileToForm(profiles, draft.selectedProfileId, fields.fieldSetters, setGameConfig, modsState.selectedMod);
+        applyProfileToForm(profiles, draft.selectedProfileId, fields.fieldSetters, setGameConfig);
       }
     }
 
@@ -740,50 +745,22 @@ export function useCreateJobForm(
     if (draft.gameConfig) {
       setGameConfig(draft.gameConfig);
     }
-    if (draft.sourceName) {
-      setModFromQuery(draft.sourceName);
-    }
-
-    // Restore language filter state
-    if (draft.showOnlySelectedLanguage !== undefined) {
-      setShowOnlySelectedLanguage(draft.showOnlySelectedLanguage);
-    }
-
-    // NOTE: draftRestoredRef is set in the deferred path restore effect
-    // below, after the shared context finishes loading.
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // =================================================================
-  //  Deferred draft path restore — waits for the shared context to
-  //  finish loading before deciding whether to restore file paths
-  //  from the localStorage draft or use live context data.
-  //
-  //  The DraftJobSelectionProvider starts with draftFiles = [] and
-  //  loading = true on mount, then fetches state from the backend
-  //  asynchronously.  If we restored paths in the main draft effect
-  //  (above), we would see ctx.draftFiles = [] during the initial
-  //  render and incorrectly overwrite live files (set from
-  //  ModListSection) with stale localStorage data.
-  //
-  //  By deferring until ctx.loading === false we can distinguish:
-  //    a) backend returns files → sync them (context takes priority)
-  //    b) backend returns empty → restore from localStorage draft
+  //  Deferred draft path restore
   // =================================================================
 
   useEffect(() => {
     if (draftRestoredRef.current) return;
-    if (ctx.loading) return; // wait for the initial backend fetch
+    if (ctx.loading) return;
 
     if (ctx.draftFiles.length > 0) {
-      // Context already carries live files (set externally, e.g. from
-      // ModListSection).  Sync them to local paths and skip draft restore.
       paths.replacePaths(ctx.draftFiles);
       draftRestoredRef.current = true;
       return;
     }
 
-    // Context is empty after the backend fetch settled: restore from
-    // localStorage draft if available.
     if (draft && draft.filePathList && draft.filePathList.length > 0) {
       paths.replacePaths(draft.filePathList);
       ctx.setFiles(draft.filePathList);
@@ -794,13 +771,7 @@ export function useCreateJobForm(
 
   // =================================================================
   //  Apply selected profile on initial load (when profiles arrive
-  //  asynchronously).  Catches the case where:
-  //    a) no draft exists but selectedProfileId is in localStorage, OR
-  //    b) draft restore attempted applyProfileToForm but profiles were
-  //       not yet loaded (profiles.length === 0).
-  //
-  //  Uses a dedicated ref to fire only once — subsequent manual profile
-  //  switches go through confirmProfileApply and are not re-applied here.
+  //  asynchronously)
   // =================================================================
 
   useEffect(() => {
@@ -813,7 +784,6 @@ export function useCreateJobForm(
       createFlow.selectedProfileId,
       fields.fieldSetters,
       setGameConfig,
-      modsState.selectedMod,
     );
     initialProfileAppliedRef.current = true;
   }, [profiles, createFlow.selectedProfileId]);
@@ -826,14 +796,10 @@ export function useCreateJobForm(
     if (!draftRestoredRef.current) return;
 
     setDraft(buildDraftFromState({
-      gamesState, modsState, showOnlySelectedLanguage, selectedLanguage,
-      paths, fields, createFlow, gameConfig, modFromQuery,
+      gamesState, paths, fields, createFlow, gameConfig,
     }));
   }, [
-    modsState.selectedMod,
     gamesState.selectedGameId,
-    showOnlySelectedLanguage,
-    selectedLanguage,
     paths.filePaths,
     paths.filePathList,
     paths.addedPaths,
@@ -848,6 +814,7 @@ export function useCreateJobForm(
     fields.useCache,
     fields.promptProfileName,
     fields.protectionStrategy,
+    fields.ruleSetIds,
     fields.validatorName,
     fields.outputDir,
     fields.outputFilenameSuffix,
@@ -867,118 +834,7 @@ export function useCreateJobForm(
     fields.logPrompts,
     createFlow.selectedProfileId,
     gameConfig,
-    modFromQuery,
   ]);
-
-  // =================================================================
-  //  Cross-cutting handlers — mod selection
-  // =================================================================
-
-  const handleSelectMod = useCallback(
-    (mod: ModInfoSchema) => {
-      modsState.setSelectedMod(mod);
-
-      // Auto-switch game if mod belongs to a different game
-      if (mod.game_id && mod.game_id !== gamesState.selectedGameId) {
-        gamesState.setSelectedGameId(mod.game_id);
-      }
-
-      const defaultLang = getDefaultLangForMod(mod.localisation_paths);
-      setSelectedLanguage(defaultLang);
-
-      if (showOnlySelectedLanguage) {
-        // Safe mode: only files for the selected language
-        const filteredPaths = filterFilesByLanguage(mod.localisation_paths, defaultLang);
-        internalDraftChangeRef.current++;
-        paths.replacePaths(filteredPaths);
-        ctx.setFiles(filteredPaths);
-        // Auto-sync srcLang only if user hasn't manually overridden it
-        if (!fields.dirty.srcLangDirty) {
-          fields.fieldSetters.setSrcLang(defaultLang);
-        }
-      } else {
-        // Advanced mode: all files
-        internalDraftChangeRef.current++;
-        paths.replacePaths(mod.localisation_paths);
-        ctx.setFiles(mod.localisation_paths);
-        // Auto-sync srcLang only if user hasn't manually overridden it
-        if (!fields.dirty.srcLangDirty) {
-          fields.fieldSetters.setSrcLang(defaultLang);
-        }
-      }
-
-      fileSearch.setSearchQuery('');
-      fileSearch.setFoundFiles([]);
-    },
-    [showOnlySelectedLanguage],
-  );
-
-  const handleClearSelection = useCallback(() => {
-    modsState.setSelectedMod(null);
-    setSelectedLanguage('en');
-    internalDraftChangeRef.current++;
-    paths.replacePaths([]);
-    fileSearch.setSearchQuery('');
-    fileSearch.setFoundFiles([]);
-    clearDraft();
-    ctx.clearFiles();
-  }, []);
-
-  // =================================================================
-  //  Language toggle handler
-  // =================================================================
-
-  const handleToggleChange = useCallback(
-    (showOnly: boolean) => {
-      setShowOnlySelectedLanguage(showOnly);
-      if (!modsState.selectedMod) return;
-
-      if (showOnly) {
-        // Switching TO safe mode: filter to selected language only
-        const filteredPaths = filterFilesByLanguage(
-          modsState.selectedMod.localisation_paths,
-          selectedLanguage,
-        );
-        internalDraftChangeRef.current++;
-        paths.replacePaths(filteredPaths);
-        ctx.setFiles(filteredPaths);
-        fields.fieldSetters.setSrcLang(selectedLanguage);
-      } else {
-        // Switching TO advanced mode: show all files
-        internalDraftChangeRef.current++;
-        paths.replacePaths(modsState.selectedMod.localisation_paths);
-        ctx.setFiles(modsState.selectedMod.localisation_paths);
-      }
-    },
-    [modsState.selectedMod, selectedLanguage],
-  );
-
-  // =================================================================
-  //  Language selection handler
-  // =================================================================
-
-  const handleLanguageChange = useCallback(
-    (lang: string) => {
-      setSelectedLanguage(lang);
-
-      if (showOnlySelectedLanguage && modsState.selectedMod) {
-        // Safe mode: replace files with new language
-        const filteredPaths = filterFilesByLanguage(
-          modsState.selectedMod.localisation_paths,
-          lang,
-        );
-        internalDraftChangeRef.current++;
-        paths.replacePaths(filteredPaths);
-        ctx.setFiles(filteredPaths);
-        // Use setFormField to mark this as a manual override
-        fields.setFormField('srcLang', lang);
-      } else {
-        // Advanced mode: just update srcLang (mark as manual override)
-        fields.setFormField('srcLang', lang);
-      }
-    },
-    [showOnlySelectedLanguage, modsState.selectedMod, fields.setFormField, paths.replacePaths],
-  );
 
   // =================================================================
   //  Form actions — wired to flow layer
@@ -1000,6 +856,7 @@ export function useCreateJobForm(
     fields.apiKeyIds,
     fields.promptProfileName,
     fields.protectionStrategy,
+    fields.ruleSetIds,
     fields.validatorName,
     fields.outputDir,
     fields.outputFilenameSuffix,
@@ -1021,13 +878,30 @@ export function useCreateJobForm(
   ]);
 
   const handleCreateJob = useCallback(async () => {
+    await flushRawTextDebounce();
+
     const values = buildFormValues(paths, fields);
-    // createDirectJob syncs form paths to the backend draft (authoritative)
-    // before creating the job, so there is no race with fire-and-forget
-    // add/remove/set mutations.  The backend also clears the draft after
-    // successful job creation, so we only clear the local draft here.
-    await createFlow.createDirectJob(values, gameConfig);
+    const result = await createFlow.createDirectJob(values, gameConfig);
+
+    // Do not clear the form if the job has zero translation units.
+    // This keeps the user's file selection so they can adjust config
+    // (language, header, etc.) and retry without re-adding files.
+    if (result.totalUnits === 0) {
+      const noUnitsDiag = result.diagnostics.find(
+        d => d.code === 'NO_TRANSLATION_UNITS_FOUND' || d.code === 'NO_UNITS',
+      );
+      if (noUnitsDiag) {
+        showToast(
+          'No translation units found. Files were kept so you can adjust language/header/config.',
+          'warning',
+        );
+        return;
+      }
+    }
+
     clearDraft();
+
+    await ctx.refresh();
   }, [
     paths.filePaths,
     fields.jobName,
@@ -1041,6 +915,7 @@ export function useCreateJobForm(
     fields.apiKeyIds,
     fields.promptProfileName,
     fields.protectionStrategy,
+    fields.ruleSetIds,
     fields.validatorName,
     fields.outputDir,
     fields.outputFilenameSuffix,
@@ -1059,11 +934,49 @@ export function useCreateJobForm(
     fields.singleUserTemplate,
     fields.logPrompts,
     gameConfig,
+    ctx.refresh,
+    showToast,
   ]);
 
   // =================================================================
+  //  Debounced raw textarea sync
+  // =================================================================
+
+  const rawTextDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DEBOUNCE_MS = 600;
+
+  const filePathsRef = useRef(paths.filePaths);
+  filePathsRef.current = paths.filePaths;
+
+  const debouncedSyncPathsToBackend = useCallback((text: string) => {
+    if (rawTextDebounceRef.current) {
+      clearTimeout(rawTextDebounceRef.current);
+    }
+    rawTextDebounceRef.current = setTimeout(() => {
+      ctx.setFiles(normalizePathLines(text));
+      rawTextDebounceRef.current = null;
+    }, DEBOUNCE_MS);
+  }, [ctx.setFiles]);
+
+  async function flushRawTextDebounce(): Promise<void> {
+    if (rawTextDebounceRef.current) {
+      clearTimeout(rawTextDebounceRef.current);
+      rawTextDebounceRef.current = null;
+      const currentPaths = normalizePathLines(filePathsRef.current);
+      await ctx.setFiles(currentPaths);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (rawTextDebounceRef.current) {
+        clearTimeout(rawTextDebounceRef.current);
+      }
+    };
+  }, []);
+
+  // =================================================================
   //  setFormField — VM-level dispatcher
-  //  Routes 'filePaths' to the paths hook, everything else to fields.
   // =================================================================
 
   const setFormField = useCallback(
@@ -1074,8 +987,7 @@ export function useCreateJobForm(
       if (field === 'filePaths') {
         internalDraftChangeRef.current++;
         paths.syncPathsFromText(value as string);
-        // Sync draft storage with the new path list
-        ctx.setFiles(normalizePathLines(value as string));
+        debouncedSyncPathsToBackend(value as string);
       } else {
         (fields.setFormField as (f: string, v: unknown) => void)(
           field as string,
@@ -1083,7 +995,7 @@ export function useCreateJobForm(
         );
       }
     },
-    [paths.syncPathsFromText, fields.setFormField, ctx.setFiles],
+    [paths.syncPathsFromText, fields.setFormField, debouncedSyncPathsToBackend],
   );
 
   // =================================================================
@@ -1093,7 +1005,7 @@ export function useCreateJobForm(
   const form = buildForm(paths, fields);
 
   // =================================================================
-  //  Validation errors — computed from current form state
+  //  Validation errors
   // =================================================================
 
   const validationErrors = getCreateJobProblems({
@@ -1104,7 +1016,6 @@ export function useCreateJobForm(
     model: form.model,
     apiKeyIds: form.apiKeyIds,
     availableKeysForProvider: filteredApiKeys.length,
-    // --- Advanced config validation ---
     promptProfileName: form.promptProfileName,
     protectionStrategy: form.protectionStrategy,
     validatorName: form.validatorName,
@@ -1115,22 +1026,8 @@ export function useCreateJobForm(
   });
 
   // =================================================================
-  //  Profile game warning — shown in confirmation modal when a mod is
-  //  selected and the pending profile targets a different game.
+  //  Return view model
   // =================================================================
-
-  let profileGameWarning = '';
-  if (
-    profileConfirmType === 'apply' &&
-    pendingProfileId &&
-    modsState.selectedMod
-  ) {
-    const pendingProfile = profiles.find(p => p.id === pendingProfileId);
-    if (pendingProfile?.game && pendingProfile.game !== modsState.selectedMod.game_id) {
-      profileGameWarning =
-        'This profile targets a different game/parser. Mod-specific game settings will not be applied.';
-    }
-  }
 
   return {
     form,
@@ -1162,9 +1059,6 @@ export function useCreateJobForm(
     mods: modsState.mods,
     filteredMods,
     modsLoading: modsState.modsLoading,
-    selectedMod: modsState.selectedMod,
-    handleSelectMod,
-    handleClearSelection,
 
     // --- Game filter ---
     games: gamesState.games,
@@ -1173,13 +1067,6 @@ export function useCreateJobForm(
     selectedGameId: gamesState.selectedGameId,
     handleGameChange,
 
-    showOnlySelectedLanguage,
-    setShowOnlySelectedLanguage: handleToggleChange,
-    selectedLanguage,
-    setSelectedLanguage: handleLanguageChange,
-    availableLanguages,
-
-    modFromQuery,
     gameConfig,
 
     handleResetDefaults: () => {
@@ -1213,8 +1100,22 @@ export function useCreateJobForm(
     selectProfileDirect,
     showProfileConfirm,
     profileConfirmType,
-    profileGameWarning,
     confirmProfileApply,
     cancelProfileConfirm,
+
+    // --- Draft job selection ---
+    draftGrouped: ctx.grouped,
+    draftMeta: ctx.draftMeta,
+    draftFiles: ctx.draftFiles,
+    draftDiagnostics: ctx.diagnostics,
+    draftFileCount: ctx.fileCount,
+    draftLoading: ctx.loading,
+    draftError: ctx.error,
+    selectedModPaths,
+    setSelectedModPaths,
+    handleAddModFiles,
+    handleSearchAndAdd,
+    handleRemoveDraftFile,
+    handleRemoveDraftFiles,
   };
 }

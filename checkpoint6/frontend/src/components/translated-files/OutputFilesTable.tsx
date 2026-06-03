@@ -3,6 +3,7 @@
 /* ------------------------------------------------------------------ */
 import type { OutputFile } from '../../api/types';
 import OutputFileStatusBadge from './OutputFileStatusBadge';
+import ResultBadge from '../common/ResultBadge';
 
 interface Props {
   files: OutputFile[];
@@ -20,35 +21,15 @@ function formatSize(bytes: number | null): string {
 }
 
 function AnalysisBadge({ analysis, stale }: { analysis: OutputFile['latest_analysis']; stale?: boolean }) {
-  if (stale && analysis) {
-    return (
-      <span style={{ display: 'inline-flex', gap: '0.25rem', alignItems: 'center' }}>
-        <span className={`badge ${
-          analysis.status === 'passed' ? 'badge-success' :
-          analysis.status === 'warning' ? 'badge-warning' :
-          analysis.status === 'failed' ? 'badge-error' : 'badge-muted'
-        }`}>
-          {analysis.status}
-          {analysis.errors_count > 0 && ` E:${analysis.errors_count}`}
-          {analysis.warnings_count > 0 && ` W:${analysis.warnings_count}`}
-        </span>
-        <span className="badge badge-warning" title="File changed after last analysis">Stale</span>
-      </span>
-    );
-  }
   if (!analysis) {
     return <span className="badge badge-muted">Not analyzed</span>;
   }
   return (
-    <span className={`badge ${
-      analysis.status === 'passed' ? 'badge-success' :
-      analysis.status === 'warning' ? 'badge-warning' :
-      analysis.status === 'failed' ? 'badge-error' : 'badge-muted'
-    }`}>
-      {analysis.status}
-      {analysis.errors_count > 0 && ` E:${analysis.errors_count}`}
-      {analysis.warnings_count > 0 && ` W:${analysis.warnings_count}`}
-    </span>
+    <ResultBadge
+      status={analysis.status}
+      errorsCount={analysis.errors_count}
+      warningsCount={analysis.warnings_count}
+    />
   );
 }
 

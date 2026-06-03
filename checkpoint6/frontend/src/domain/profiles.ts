@@ -1,5 +1,6 @@
 import type { TranslationProfile, CreateProfileRequest, UpdateProfileRequest } from "../api/types";
 import { getNestedValue } from "./configFieldRegistry";
+import { BUILTIN_RULE_SET_ID } from "../constants";
 
 /* ------------------------------------------------------------------ */
 /*  Domain model                                                       */
@@ -190,6 +191,7 @@ export interface ProfileFormModel {
   singleUserTemplate: string;
   logPrompts: boolean;
   protectionStrategy: string;
+  ruleSetIds: string[];
   validatorName: string;
   outputDir: string;
   outputRootDir: string;
@@ -224,6 +226,7 @@ export const DEFAULT_PROFILE_FORM: ProfileFormModel = {
   singleUserTemplate: "",
   logPrompts: false,
   protectionStrategy: "",
+  ruleSetIds: [BUILTIN_RULE_SET_ID],
   validatorName: "",
   outputDir: "",
   outputRootDir: "",
@@ -313,6 +316,9 @@ export function profileToForm(
     protectionStrategy:
       (getNestedValue(src, "protection.strategy") as string) ??
       DEFAULT_PROFILE_FORM.protectionStrategy,
+    ruleSetIds:
+      (getNestedValue(src, "protection.rule_set_ids") as string[]) ??
+      DEFAULT_PROFILE_FORM.ruleSetIds,
     validatorName:
       (getNestedValue(src, "validation.validator_name") as string) ??
       DEFAULT_PROFILE_FORM.validatorName,
@@ -389,6 +395,7 @@ export function formToProfileConfig(
     prompt,
     protection: {
       strategy: form.protectionStrategy,
+      rule_set_ids: form.ruleSetIds.length > 0 ? form.ruleSetIds : undefined,
     },
     validation: {
       validator_name: form.validatorName,

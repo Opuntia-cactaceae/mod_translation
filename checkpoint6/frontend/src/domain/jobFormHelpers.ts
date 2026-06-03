@@ -5,6 +5,7 @@
 
 import type { CreateJobFormModel } from './jobForm';
 import { getNestedValue } from './configFieldRegistry';
+import { resolveCodeFromStellarisToken } from '../utils/languageRegistry';
 
 /**
  * Detect a source language code from a filename like `l_english.yml`.
@@ -13,27 +14,7 @@ import { getNestedValue } from './configFieldRegistry';
 export function detectSourceLangFromFilename(path: string): string | null {
   const match = path.match(/l_(\w+)\.yml$/);
   if (!match) return null;
-  const langMap: Record<string, string> = {
-    english: 'en',
-    french: 'fr',
-    german: 'de',
-    russian: 'ru',
-    spanish: 'es',
-    polish: 'pl',
-    japanese: 'ja',
-    korean: 'ko',
-    simp_chinese: 'zh',
-    brazilian: 'pt-BR',
-    portuguese: 'pt',
-    italian: 'it',
-    dutch: 'nl',
-    swedish: 'sv',
-    czech: 'cs',
-    hungarian: 'hu',
-    turkish: 'tr',
-    arabic: 'ar',
-  };
-  return langMap[match[1]] || null;
+  return resolveCodeFromStellarisToken(match[1]);
 }
 
 /**

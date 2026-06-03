@@ -11,6 +11,24 @@ interface Props {
   onCancel: () => void;
 }
 
+function _hasIssues(job: OutputAnalysisJob): boolean {
+  return job.failed_count > 0 || job.error_count > 0;
+}
+
+function _badgeClassAndLabel(job: OutputAnalysisJob): { cls: string; label: string } {
+  if (job.status === 'completed' && _hasIssues(job)) {
+    return { cls: 'warning', label: 'Completed with issues' };
+  }
+  switch (job.status) {
+    case 'queued':     return { cls: 'info', label: 'Queued' };
+    case 'running':    return { cls: 'primary', label: 'Running' };
+    case 'completed':  return { cls: 'success', label: 'Completed' };
+    case 'failed':     return { cls: 'danger', label: 'Failed' };
+    case 'cancelled':  return { cls: 'secondary', label: 'Cancelled' };
+    default:           return { cls: 'secondary', label: job.status };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -63,12 +81,14 @@ export default function AnalysisJobProgress({ job: initialJob, onComplete, onCan
 
   const progress = job.total_count > 0 ? (job.processed_count / job.total_count) * 100 : 0;
   const isActive = job.status === 'queued' || job.status === 'running';
+  const badge = _badgeClassAndLabel(job);
+  const issueCount = job.failed_count + job.error_count;
 
   return (
-    <div className={`analysis-job-progress card ${job.status === 'failed' ? 'card-error' : ''}`}>
+    <div className={`analysis-job-progress card ${badge.cls === 'danger' ? 'card-error' : ''}`}>
       <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span>Analysis Job</span>
-        <span className={`badge badge-${_badgeClass(job.status)}`}>{job.status}</span>
+        <span className={`badge badge-${badge.cls}`}>{badge.label}</span>
       </div>
 
       <div style={{ padding: '0.75rem' }}>
@@ -82,14 +102,40 @@ export default function AnalysisJobProgress({ job: initialJob, onComplete, onCan
           </div>
         )}
 
-        {/* Counts */}
-        <div className="analysis-job-counts" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
-          {job.passed_count > 0 && <span className="analysis-count passed">Passed: {job.passed_count}</span>}
-          {job.warning_count > 0 && <span className="analysis-count warning">Warnings: {job.warning_count}</span>}
-          {job.failed_count > 0 && <span className="analysis-count failed">Failed: {job.failed_count}</span>}
-          {job.error_count > 0 && <span className="analysis-count error">Errors: {job.error_count}</span>}
-          {job.skipped_count > 0 && <span className="analysis-count skipped">Skipped: {job.skipped_count}</span>}
+        {/* Files section */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <div style={{ fontSize: '0.8em', fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-muted, #888)' }}>
+            Files
+          </div>
+          <div className="analysis-job-counts" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <span className="analysis-count">Total: {job.total_count}</span>
+            <span className="analysis-count passed">Successful: {job.passed_count}</span>
+            <span className="analysis-count failed">Failed: {job.failed_count}</span>
+            <span className="analysis-count skipped">Skipped: {job.skipped_count}</span>
+          </div>
         </div>
+
+        {/* Analysis section */}
+        <div style={{ marginBottom: '0.5rem' }}>
+          <div style={{ fontSize: '0.8em', fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-muted, #888)' }}>
+            Analysis
+          </div>
+          <div className="analysis-job-counts" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <span className="analysis-count error">Errors found: {job.error_count}</span>
+            <span className="analysis-count warning">Warnings found: {job.warning_count}</span>
+            <span className="analysis-count">Processed: {job.processed_count}</span>
+          </div>
+        </div>
+
+        {/* Issues summary for completed-with-issues */}
+        {job.status === 'completed' && issueCount > 0 && (
+          <div className="alert alert-warning" style={{ marginTop: '0.5rem', marginBottom: '0.5rem', fontSize: '0.85em' }}>
+            Completed with {issueCount} issue{issueCount !== 1 ? 's' : ''}
+            {' '}({job.failed_count} failed file{job.failed_count !== 1 ? 's' : ''}
+            {job.failed_count > 0 && job.error_count > 0 ? ', ' : ''}
+            {job.error_count > 0 ? `${job.error_count} error${job.error_count !== 1 ? 's' : ''}` : ''})
+          </div>
+        )}
 
         {/* Error message */}
         {job.error_message && (
@@ -112,15 +158,4 @@ export default function AnalysisJobProgress({ job: initialJob, onComplete, onCan
       </div>
     </div>
   );
-}
-
-function _badgeClass(status: string): string {
-  switch (status) {
-    case 'queued': return 'info';
-    case 'running': return 'primary';
-    case 'completed': return 'success';
-    case 'failed': return 'danger';
-    case 'cancelled': return 'secondary';
-    default: return 'secondary';
-  }
 }

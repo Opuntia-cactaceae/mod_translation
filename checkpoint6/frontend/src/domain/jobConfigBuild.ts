@@ -24,6 +24,7 @@ export interface BuildJobConfigInput {
   singleUserTemplate?: string;
   logPrompts?: boolean;
   protectionStrategy?: string;
+  ruleSetIds?: string[];
   validatorName?: string;
   outputDir?: string;
   outputFilenameSuffix?: string;
@@ -86,6 +87,7 @@ export function buildJobConfig(input: BuildJobConfigInput): Record<string, unkno
   // Build nested protection config
   const protection: Record<string, unknown> = {};
   if (input.protectionStrategy) protection.strategy = input.protectionStrategy;
+  if (input.ruleSetIds && input.ruleSetIds.length > 0) protection.rule_set_ids = input.ruleSetIds;
 
   // Build nested validation config
   const validation: Record<string, unknown> = {};

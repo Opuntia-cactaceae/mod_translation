@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { api, ApiError, useToast } from '../App';
 import type {
   OutputFile,
@@ -15,6 +15,10 @@ import OutputFilesToolbar from '../components/translated-files/OutputFilesToolba
 import OutputFilesSummaryCards from '../components/translated-files/OutputFilesSummaryCards';
 import OutputFileActions from '../components/translated-files/OutputFileActions';
 import AnalysisJobProgress from '../components/translated-files/AnalysisJobProgress';
+import OutputJobList from '../components/translated-files/OutputJobList';
+import SelectedJobFilesPanel from '../components/translated-files/SelectedJobFilesPanel';
+import { usePersistentState } from '../hooks/usePersistentState';
+import { STORAGE_KEYS } from '../utils/storageKeys';
 
 /* ------------------------------------------------------------------ */
 /*  Filter state                                                       */
@@ -25,37 +29,123 @@ interface FilterState {
   group_key?: string;
 }
 
+type GroupMode = 'folder' | 'job' | 'date-job';
+
 /* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 export default function TranslatedFiles() {
   const toast = useToast();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // --- State ---
+  // ===================================================================
+  //  Core state
+  // ===================================================================
+
+  // Full tree (all jobs) — used to derive job list cards
+  const [tree, setTree] = useState<OutputFileTreeResponse | null>(null);
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  // Selected job ID — primary state driving which job's files are shown
+  // Priority: location.state.restoreJobId (from editor back nav) > ?job_id= (from Translation Jobs) > null
+  const navState = location.state as { restoreJobId?: string } | null;
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(
+    navState?.restoreJobId || searchParams.get('job_id') || null,
+  );
+  const initialJobSetRef = useRef(false);
+
+  // Job-scoped data (loaded when selectedJobId changes)
+  const [jobTree, setJobTree] = useState<OutputFileTreeResponse | null>(null);
+  const [jobTreeLoading, setJobTreeLoading] = useState(false);
+
   const [files, setFiles] = useState<OutputFile[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [tree, setTree] = useState<OutputFileTreeResponse | null>(null);
-  const [treeLoading, setTreeLoading] = useState(false);
-
   const [summary, setSummary] = useState<OutputFilesSummaryResponse | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
-  const [search, setSearch] = useState(searchParams.get('q') || '');
   const [selectedFile, setSelectedFile] = useState<OutputFile | null>(null);
+
+  // Search
+  const [search, setSearch] = useState(searchParams.get('q') || '');
+
+  // View mode: tree or table (persisted)
+  const [viewMode, setViewMode] = usePersistentState<'tree' | 'table'>(
+    'stellaris_translator.translatedFilesViewMode',
+    'tree',
+  );
+
+  // ===================================================================
+  //  Reindex state
+  // ===================================================================
 
   const [reindexLoading, setReindexLoading] = useState(false);
   const [reindexResult, setReindexResult] = useState<string | null>(null);
   const [lastScanResult, setLastScanResult] = useState<OutputScanResultResponse | null>(null);
 
-  const [activeJob, setActiveJob] = useState<OutputAnalysisJob | null>(null);
+  // ===================================================================
+  //  Analysis job state
+  // ===================================================================
 
-  // Filter from query params
+  const [activeJob, setActiveJob] = useState<OutputAnalysisJob | null>(null);
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+
+  // ===================================================================
+  //  Grouping state (persisted)
+  // ===================================================================
+
+  const [groupMode, setGroupMode] = usePersistentState<GroupMode>(
+    STORAGE_KEYS.translatedFilesGroupMode,
+    'folder',
+  );
+
+  const [expandedGroups, setExpandedGroups] = usePersistentState<Record<string, boolean>>(
+    STORAGE_KEYS.translatedFilesExpandedGroups,
+    {},
+    {
+      legacyKeys: [STORAGE_KEYS.translatedFilesExpandedDateGroups],
+      migrateLegacy: (old: Record<string, boolean>) => {
+        const migrated: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(old)) {
+          migrated[k.includes(':') ? k : `date:${k}`] = v;
+        }
+        return migrated;
+      },
+    },
+  );
+
+  // ===================================================================
+  //  Output Job List grouping state (separate from files tree grouping)
+  // ===================================================================
+
+  const [outputJobExpandedGroups, setOutputJobExpandedGroups] = usePersistentState<Record<string, boolean>>(
+    STORAGE_KEYS.outputJobListExpandedGroups,
+    {},
+  );
+
+  function handleToggleOutputJobGroup(key: string) {
+    setOutputJobExpandedGroups(prev => ({
+      ...prev,
+      [key]: prev[key] === undefined ? false : !prev[key],
+    }));
+  }
+
+  function handleToggleGroup(key: string) {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [key]: prev[key] === undefined ? false : !prev[key],
+    }));
+  }
+
+  // ===================================================================
+  //  Filter — used for mod/group filtering within the selected job
+  // ===================================================================
+
   const filter: FilterState = {
-    job_id: searchParams.get('job_id') || undefined,
+    job_id: selectedJobId || undefined,
     mod_id: searchParams.get('mod_id') || undefined,
     group_key: searchParams.get('group_key') || undefined,
   };
@@ -72,83 +162,83 @@ export default function TranslatedFiles() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  // Update filter in URL
-  const updateFilter = useCallback((f: FilterState) => {
-    const next = new URLSearchParams();
-    if (f.job_id) next.set('job_id', f.job_id);
-    if (f.mod_id) next.set('mod_id', f.mod_id);
-    if (f.group_key) next.set('group_key', f.group_key);
-    if (search) next.set('q', search);
-    setSearchParams(next, { replace: true });
-  }, [search, setSearchParams]);
+  // ===================================================================
+  //  Data loading
+  // ===================================================================
 
-  // --- Data loading ---
-  const loadFiles = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await api.listOutputFiles({
-        job_id: filter.job_id,
-        mod_id: filter.mod_id,
-        group_key: filter.group_key,
-        q: search || undefined,
-        limit: 200,
-      });
-      setFiles(res.items);
-      setTotal(res.total);
-    } catch (err) {
-      if (err instanceof ApiError) setError(err.message);
-      else setError('Failed to load output files');
-    } finally {
-      setLoading(false);
-    }
-  }, [filter.job_id, filter.mod_id, filter.group_key, search]);
-
+  // Load full tree (all jobs) — for job list cards
   const loadTree = useCallback(async () => {
     try {
       setTreeLoading(true);
-      const res = await api.getOutputFilesTree({ job_id: filter.job_id });
+      const res = await api.getOutputFilesTree();
       setTree(res);
+
+      // Default selectedJobId to first available job
+      if (!initialJobSetRef.current && res && Object.keys(res.jobs).length > 0) {
+        const jobIds = Object.keys(res.jobs);
+        if (!selectedJobId || !jobIds.includes(selectedJobId)) {
+          setSelectedJobId(jobIds[0]);
+        }
+        initialJobSetRef.current = true;
+      }
     } catch {
       // Tree loading failures are non-critical
     } finally {
       setTreeLoading(false);
     }
-  }, [filter.job_id]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadSummary = useCallback(async () => {
-    if (!filter.job_id) {
+  // Load job-scoped data when selectedJobId changes
+  const loadJobData = useCallback(async (jobId: string | null) => {
+    if (!jobId) {
+      setJobTree(null);
+      setFiles([]);
+      setTotal(0);
       setSummary(null);
       return;
     }
+
     try {
-      setSummaryLoading(true);
-      const res = await api.getJobOutputsSummary(filter.job_id);
-      setSummary(res);
-    } catch {
-      // Summary loading failures are non-critical
+      setError(null);
+      setJobTreeLoading(true);
+      const [treeRes, fileRes, sumRes] = await Promise.all([
+        api.getOutputFilesTree({ job_id: jobId }),
+        api.listOutputFiles({ job_id: jobId, limit: 200 }),
+        api.getJobOutputsSummary(jobId),
+      ]);
+      setJobTree(treeRes);
+      setFiles(fileRes.items);
+      setTotal(fileRes.total);
+      setSummary(sumRes);
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message);
+      else setError('Failed to load job data');
     } finally {
-      setSummaryLoading(false);
+      setJobTreeLoading(false);
+      setLoading(false);
     }
-  }, [filter.job_id]);
+  }, []);
 
-  // --- Effects ---
+  // Load data on mount
   useEffect(() => {
-    loadFiles();
     loadTree();
-  }, [loadFiles, loadTree]);
+  }, [loadTree]);
 
+  // Reload job-scoped data when selectedJobId changes
   useEffect(() => {
-    loadSummary();
-  }, [loadSummary]);
+    loadJobData(selectedJobId);
+  }, [selectedJobId, loadJobData]);
 
-  // --- Reindex ---
+  // ===================================================================
+  //  Reindex
+  // ===================================================================
+
   async function handleReindex() {
-    if (!filter.job_id) return;
+    if (!selectedJobId) return;
     try {
       setReindexLoading(true);
       setReindexResult(null);
-      const res = await api.reindexJobOutputs(filter.job_id);
+      const res = await api.reindexJobOutputs(selectedJobId);
       setLastScanResult(res);
       const parts: string[] = [];
       if (res.scanned_count > 0) parts.push(`${res.scanned_count} scanned`);
@@ -164,7 +254,7 @@ export default function TranslatedFiles() {
         toast.showToast(`Reindex completed with ${res.errors_count} error(s)`, 'error');
       }
       // Reload all data
-      await Promise.all([loadFiles(), loadTree(), loadSummary()]);
+      await Promise.all([loadTree(), loadJobData(selectedJobId)]);
     } catch (err) {
       if (err instanceof ApiError) {
         setReindexResult(`Reindex failed: ${err.message}`);
@@ -178,81 +268,159 @@ export default function TranslatedFiles() {
     }
   }
 
-  // --- Async batch analysis ---
-  async function handleAnalyzeStale() {
-    if (!filter.job_id) return;
+  // ===================================================================
+  //  Async batch analysis
+  // ===================================================================
+
+  async function handleAnalyzeStale(jobIdOverride?: string) {
+    const targetJobId = jobIdOverride || selectedJobId;
+    if (!targetJobId) return;
+
+    if (batchAnalyzing) return;  // Prevent double-submit
+
     try {
+      setBatchAnalyzing(true);
+
+      // Step 1: Create the analysis job
       const job = await api.createOutputAnalysisJob({
         scope_type: 'job',
-        job_id: filter.job_id,
+        job_id: targetJobId,
         only_stale: true,
         checks: ['compilability', 'placeholders'],
       });
       setActiveJob(job);
-      toast.showToast('Analysis job created', 'success');
+
+      // Step 2: Explicitly start the job (ensures it's submitted to the worker)
+      try {
+        const startedJob = await api.startOutputAnalysisJob(job.id);
+        setActiveJob(startedJob);
+        toast.showToast('Analysis started', 'success');
+      } catch {
+        // Fallback: the create endpoint already submitted to the worker,
+        // so proceed with polling the original job
+        toast.showToast('Analysis started', 'success');
+      }
     } catch (err) {
+      setActiveJob(null);
+      setBatchAnalyzing(false);
       if (err instanceof ApiError) {
-        toast.showToast(`Failed to create analysis job: ${err.message}`, 'error');
+        toast.showToast(`Failed to start analysis: ${err.message}`, 'error');
       } else {
-        toast.showToast('Failed to create analysis job', 'error');
+        toast.showToast('Failed to start analysis', 'error');
       }
     }
   }
 
-  // --- Analysis job callbacks ---
+  // ===================================================================
+  //  Analysis job callbacks
+  // ===================================================================
+
   function handleJobComplete(job: OutputAnalysisJob) {
     const parts: string[] = [];
-    if (job.processed_count > 0) parts.push(`${job.processed_count} analyzed`);
+    if (job.processed_count > 0) parts.push(`${job.processed_count} file${job.processed_count !== 1 ? 's' : ''}`);
     if (job.passed_count > 0) parts.push(`${job.passed_count} passed`);
-    if (job.warning_count > 0) parts.push(`${job.warning_count} warnings`);
     if (job.failed_count > 0) parts.push(`${job.failed_count} failed`);
-    if (job.error_count > 0) parts.push(`${job.error_count} errors`);
+    if (job.error_count > 0) parts.push(`${job.error_count} error${job.error_count !== 1 ? 's' : ''}`);
+    if (job.warning_count > 0) parts.push(`${job.warning_count} warning${job.warning_count !== 1 ? 's' : ''}`);
+    if (job.skipped_count > 0) parts.push(`${job.skipped_count} skipped`);
+
+    const hasIssues = job.failed_count > 0 || job.error_count > 0;
+    const severity = job.status === 'completed' && hasIssues ? 'warning' : job.status === 'completed' ? 'success' : 'error';
+    const statusLabel = hasIssues ? 'completed with issues' : job.status;
 
     toast.showToast(
-      `Analysis ${job.status}: ${parts.join(', ') || 'no files'}`,
-      job.status === 'completed' ? (job.failed_count > 0 ? 'error' : 'success') : 'success'
+      `Analysis ${statusLabel}: ${parts.join(', ') || 'no files'}`,
+      severity,
     );
 
     // Reload data
-    loadFiles();
-    loadTree();
-    loadSummary();
+    loadJobData(selectedJobId);
+
+    // Clear active job state
+    setActiveJob(null);
+    setBatchAnalyzing(false);
   }
 
   function handleJobCancelled() {
-    // Job was cancelled — keep the panel visible so the status updates
+    setActiveJob(null);
+    setBatchAnalyzing(false);
   }
 
-  // --- Single-file analysis complete callback ---
+  // ===================================================================
+  //  Single-file analysis complete callback
+  // ===================================================================
+
   function handleAnalysisComplete(_result: OutputAnalysisResult) {
-    loadFiles();
-    loadSummary();
+    loadJobData(selectedJobId);
   }
 
-  // --- Render ---
-  const jobId = filter.job_id || null;
+  // ===================================================================
+  //  Refresh handler — preserves selectedJobId
+  // ===================================================================
+
+  function handleRefresh() {
+    loadTree();
+    loadJobData(selectedJobId);
+  }
+
+  // ===================================================================
+  //  Job selection handler — preserves selectedJobId across refreshes
+  // ===================================================================
+
+  function handleSelectJob(jobId: string) {
+    setSelectedJobId(jobId);
+  }
+
+  // ===================================================================
+  //  Filter change handler — forwards filter changes for tree/table
+  // ===================================================================
+
+  function handleFilterChange(f: FilterState) {
+    // Job selection is handled by handleSelectJob, not filter
+    // Mod/group filtering is applied via the tree selection
+    const next = new URLSearchParams();
+    if (f.mod_id) next.set('mod_id', f.mod_id);
+    if (f.group_key) next.set('group_key', f.group_key);
+    if (search) next.set('q', search);
+    setSearchParams(next, { replace: true });
+  }
+
+  // ===================================================================
+  //  Render
+  // ===================================================================
 
   return (
     <div>
       <div className="page-header">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h1>Translated Files</h1>
-            <p>
-              {jobId
-                ? <>Job: <span className="mono">{jobId}</span></>
-                : 'Browse all translated output files'}
-            </p>
-          </div>
-        </div>
+        <h1>Translated Files</h1>
+        <p>Browse translated output files by job</p>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Summary cards */}
-      {summary && (
-        <OutputFilesSummaryCards summary={summary} loading={summaryLoading} />
-      )}
+      {/* Job list / cards */}
+      <div className="card">
+        <div className="card-title">
+          Output Jobs
+          {tree && Object.keys(tree.jobs).length > 0 && (
+            <span className="tree-node-count" style={{ marginLeft: '0.5rem' }}>
+              {Object.keys(tree.jobs).length}
+            </span>
+          )}
+        </div>
+        <OutputJobList
+          tree={tree}
+          loading={treeLoading}
+          selectedJobId={selectedJobId}
+          onSelectJob={handleSelectJob}
+          onRefresh={handleRefresh}
+          onReindex={handleReindex}
+          reindexLoading={reindexLoading}
+          onAnalyzeStale={handleAnalyzeStale}
+          expandedGroups={outputJobExpandedGroups}
+          onToggleGroup={handleToggleOutputJobGroup}
+        />
+      </div>
 
       {/* Active analysis job progress */}
       {activeJob && (
@@ -265,17 +433,17 @@ export default function TranslatedFiles() {
         </div>
       )}
 
-      {/* Toolbar */}
+      {/* Files toolbar */}
       <OutputFilesToolbar
-        jobId={jobId}
+        jobId={selectedJobId}
         search={search}
         onSearchChange={syncSearch}
-        onRefresh={() => { loadFiles(); loadTree(); loadSummary(); }}
+        onRefresh={handleRefresh}
         onReindex={handleReindex}
         reindexLoading={reindexLoading}
         reindexResult={reindexResult}
         onAnalyzeStale={handleAnalyzeStale}
-        batchAnalyzing={false}
+        batchAnalyzing={batchAnalyzing}
       />
 
       {/* Reindex diagnostics banner */}
@@ -304,27 +472,26 @@ export default function TranslatedFiles() {
         </div>
       )}
 
-      {/* Tree + Table layout */}
-      <div className="output-files-layout">
-        <div className="output-files-tree-panel">
-          <div className="card-title" style={{ padding: '0.5rem 0.75rem', margin: 0 }}>Files Tree</div>
-          <OutputFilesTree
-            tree={tree}
-            loading={treeLoading}
-            filter={filter}
-            onFilterChange={updateFilter}
-          />
-        </div>
-        <div className="output-files-table-panel">
-          <OutputFilesTable
-            files={files}
-            loading={loading}
-            total={total}
-            onSelectFile={setSelectedFile}
-            selectedFileId={selectedFile?.id}
-          />
-        </div>
-      </div>
+      {/* Selected job files panel */}
+      <SelectedJobFilesPanel
+        selectedJobId={selectedJobId}
+        tree={jobTree}
+        treeLoading={jobTreeLoading}
+        files={files}
+        filesLoading={loading}
+        fileTotal={total}
+        filter={filter}
+        onFilterChange={handleFilterChange}
+        groupMode={groupMode}
+        expandedGroups={expandedGroups}
+        onToggleGroup={handleToggleGroup}
+        onSelectFile={setSelectedFile}
+        selectedFileId={selectedFile?.id}
+        summary={summary}
+        summaryLoading={summaryLoading}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+      />
 
       {/* File detail modal */}
       {selectedFile && (

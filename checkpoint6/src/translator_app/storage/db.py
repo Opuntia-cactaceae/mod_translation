@@ -148,7 +148,9 @@ class DatabaseService:
                 result_summary TEXT,
                 error_message TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT
+                updated_at TEXT,
+                started_at TEXT,
+                completed_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS translation_cache (
@@ -236,6 +238,8 @@ class DatabaseService:
                 error_message TEXT,
                 output_files TEXT NOT NULL DEFAULT '[]',
                 output_root_dir TEXT,
+                started_at TEXT,
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT
             );
@@ -518,6 +522,267 @@ class DatabaseService:
                 ON output_analysis_job_files(analysis_job_id);
             CREATE INDEX IF NOT EXISTS idx_ajf_output_file_id
                 ON output_analysis_job_files(output_file_id);
+
+            -- ================================================================
+            -- Custom protection rules (user-defined regex patterns)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS custom_protection_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                rule_kind TEXT NOT NULL DEFAULT 'atomic',
+                token_type TEXT NOT NULL DEFAULT 'custom_token',
+                opener_pattern TEXT NOT NULL DEFAULT '',
+                closer_pattern TEXT NOT NULL DEFAULT '',
+                description TEXT DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100,
+                flags TEXT DEFAULT '[]',
+                sample_text TEXT DEFAULT '',
+                last_validation_error TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            -- ================================================================
+            -- Protection rule sets (rule-set-driven protection architecture)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS protection_rule_sets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                builtin INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS protection_rule_set_rules (
+                id TEXT PRIMARY KEY,
+                rule_set_id TEXT NOT NULL REFERENCES protection_rule_sets(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                rule_kind TEXT NOT NULL DEFAULT 'atomic',
+                token_type TEXT NOT NULL DEFAULT 'game_token',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100,
+                flags TEXT DEFAULT '[]',
+                opener_pattern TEXT NOT NULL DEFAULT '',
+                closer_pattern TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_protection_rule_set_rules_set_id
+                ON protection_rule_set_rules(rule_set_id);
+
+            -- ================================================================
+            -- Protection profiles (learned protection groups)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS protection_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                game_id TEXT,
+                mod_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            -- ================================================================
+            -- Protection samples (raw text samples per profile)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS protection_samples (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES protection_profiles(id) ON DELETE CASCADE,
+                source_text TEXT NOT NULL,
+                translations_json TEXT NOT NULL DEFAULT '{}',
+                source_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_protection_samples_profile_id
+                ON protection_samples(profile_id);
+
+            -- ================================================================
+            -- Learned protection candidates (grouped analysis results)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS learned_protection_candidates (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES protection_profiles(id) ON DELETE CASCADE,
+                text TEXT NOT NULL,
+                normalized_text TEXT NOT NULL,
+                suggested_pattern TEXT DEFAULT '',
+                confidence TEXT DEFAULT 'low',
+                status TEXT NOT NULL DEFAULT 'suggested'
+                    CHECK (status IN ('suggested', 'accepted', 'rejected', 'ignored')),
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                sample_count INTEGER NOT NULL DEFAULT 1,
+                max_probability REAL NOT NULL DEFAULT 0.0,
+                avg_probability REAL NOT NULL DEFAULT 0.0,
+                rule_kind TEXT NOT NULL DEFAULT 'atomic',
+                token_type TEXT NOT NULL DEFAULT 'custom_token',
+                opener_pattern TEXT NOT NULL DEFAULT '',
+                closer_pattern TEXT NOT NULL DEFAULT '',
+                supporting_methods_json TEXT NOT NULL DEFAULT '[]',
+                features_json TEXT NOT NULL DEFAULT '{}',
+                semantic_rank INTEGER NOT NULL DEFAULT 10,
+                is_markup_fragment INTEGER NOT NULL DEFAULT 0,
+                shadowed_by_paired_candidate TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (profile_id, normalized_text)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lpc_profile_id
+                ON learned_protection_candidates(profile_id);
+
+            -- ================================================================
+            -- Candidate occurrences (example positions per candidate)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS candidate_occurrences (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL REFERENCES learned_protection_candidates(id) ON DELETE CASCADE,
+                sample_id TEXT NOT NULL REFERENCES protection_samples(id) ON DELETE CASCADE,
+                start INTEGER NOT NULL,
+                end INTEGER NOT NULL,
+                source_context TEXT NOT NULL DEFAULT '',
+                translations_json TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_co_candidate_id
+                ON candidate_occurrences(candidate_id);
+
+            CREATE INDEX IF NOT EXISTS idx_co_sample_id
+                ON candidate_occurrences(sample_id);
+
+            -- ================================================================
+            -- Protection snapshots (Phase 5: full snapshot persistence)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS protection_snapshots (
+                snapshot_hash TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+                profile_id TEXT,
+                schema_hash TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_protection_snapshots_job_id
+                ON protection_snapshots(job_id);
+            CREATE INDEX IF NOT EXISTS idx_protection_snapshots_schema_hash
+                ON protection_snapshots(schema_hash);
+
+            -- ================================================================
+            -- Analysis divergence (Phase 6E: persisted divergence + readiness)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS analysis_divergence (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                output_file_id TEXT NOT NULL,
+                divergence_type TEXT NOT NULL,
+                legacy_status TEXT,
+                snapshot_status TEXT,
+                legacy_failed INTEGER NOT NULL DEFAULT 0,
+                snapshot_failed INTEGER,
+                legacy_issue_codes TEXT NOT NULL DEFAULT '[]',
+                snapshot_issue_codes TEXT NOT NULL DEFAULT '[]',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_divergence_job_file
+                ON analysis_divergence(job_id, output_file_id);
+            CREATE INDEX IF NOT EXISTS idx_analysis_divergence_job_id
+                ON analysis_divergence(job_id);
+            CREATE INDEX IF NOT EXISTS idx_analysis_divergence_output_file_id
+                ON analysis_divergence(output_file_id);
+            CREATE INDEX IF NOT EXISTS idx_analysis_divergence_type
+                ON analysis_divergence(divergence_type);
+
+            -- ================================================================
+            -- Pairing projects (v12: pairing workspace)
+            -- ================================================================
+            CREATE TABLE IF NOT EXISTS pairing_projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                source_language TEXT,
+                target_language TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_scanned_at TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'archived')),
+                notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pairing_project_files (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES pairing_projects(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                extension TEXT NOT NULL DEFAULT '',
+                parent_dir TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT,
+                modified_at TEXT,
+                detected_language TEXT,
+                detected_role TEXT NOT NULL DEFAULT 'unknown'
+                    CHECK (detected_role IN ('source', 'translated', 'unknown')),
+                group_key TEXT,
+                is_ignored INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pairing_project_pairs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES pairing_projects(id) ON DELETE CASCADE,
+                source_file_id TEXT REFERENCES pairing_project_files(id) ON DELETE SET NULL,
+                translated_file_id TEXT REFERENCES pairing_project_files(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'suggested'
+                    CHECK (status IN ('suggested', 'accepted', 'rejected', 'manual', 'ignored')),
+                confidence REAL NOT NULL DEFAULT 0.0,
+                reason TEXT,
+                created_by TEXT NOT NULL DEFAULT 'auto'
+                    CHECK (created_by IN ('auto', 'user')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pairing_project_alignments (
+                id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL REFERENCES pairing_project_pairs(id) ON DELETE CASCADE,
+                mode TEXT NOT NULL DEFAULT 'raw'
+                    CHECK (mode IN ('raw', 'structured')),
+                source_revision_hash TEXT,
+                translated_revision_hash TEXT,
+                operations_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pairing_files_project
+                ON pairing_project_files(project_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_files_project_path
+                ON pairing_project_files(project_id, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_pairing_files_hash
+                ON pairing_project_files(project_id, content_hash);
+            CREATE INDEX IF NOT EXISTS idx_pairing_files_group
+                ON pairing_project_files(project_id, group_key);
+            CREATE INDEX IF NOT EXISTS idx_pairing_pairs_project
+                ON pairing_project_pairs(project_id);
+            CREATE INDEX IF NOT EXISTS idx_pairing_pairs_status
+                ON pairing_project_pairs(project_id, status);
+            CREATE INDEX IF NOT EXISTS idx_pairing_pairs_source
+                ON pairing_project_pairs(project_id, source_file_id);
+            CREATE INDEX IF NOT EXISTS idx_pairing_pairs_translated
+                ON pairing_project_pairs(project_id, translated_file_id);
+            CREATE INDEX IF NOT EXISTS idx_pairing_alignments_pair
+                ON pairing_project_alignments(pair_id);
         """)
         conn.commit()
 
@@ -579,6 +844,51 @@ class DatabaseService:
         try:
             conn.execute(
                 "ALTER TABLE jobs ADD COLUMN output_root_dir TEXT"
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+        # Migration: add started_at / completed_at for databases created
+        # before these columns existed.
+        try:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN started_at TEXT"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN completed_at TEXT"
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+        # Migration: add semantic_rank / is_markup_fragment /
+        # shadowed_by_paired_candidate for databases created before the
+        # learned_protection_candidates table had them.
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "semantic_rank INTEGER NOT NULL DEFAULT 10"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "is_markup_fragment INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "shadowed_by_paired_candidate TEXT"
             )
             conn.commit()
         except Exception:

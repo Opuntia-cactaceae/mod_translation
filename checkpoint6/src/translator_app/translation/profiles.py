@@ -32,9 +32,6 @@ KNOWN_PROVIDERS = frozenset({
 KNOWN_PROMPT_PROFILES = frozenset({
     "simple_single", "json_batch", "strict_json_batch", "strict_json_stellaris",
 })
-KNOWN_PROTECTION_STRATEGIES = frozenset({
-    "none", "legacy_game_tokens", "xml_placeholders", "placeholder",
-})
 KNOWN_VALIDATORS = frozenset({
     "json_batch", "plain_text", "composite", "roundtrip", "strict_json",
 })
@@ -143,8 +140,8 @@ _SYSTEM_STELLARIS_STRICT = TranslationProfile(
             "profile_name": "strict_json_stellaris",
         },
         "protection": {
-            "strategy": "legacy_game_tokens",
-            "options": {},
+            "strategy": "rule_set",
+            "rule_set_ids": ["builtin_default_game_localisation"],
         },
         "validation": {
             "validator_name": "json_batch",
@@ -353,14 +350,15 @@ def _get_supported_prompt_profiles() -> frozenset:
 
 
 def _get_supported_protection_strategies() -> frozenset:
+    """Return supported protection strategy names (rule-set-driven)."""
     try:
         from translator_app.settings.validation import get_supported_protection_strategies as _res
         result = _res()
         if result:
-            return KNOWN_PROTECTION_STRATEGIES | frozenset(result)
+            return frozenset(result)
     except Exception:
         pass
-    return KNOWN_PROTECTION_STRATEGIES
+    return frozenset({"none", "rule_set"})
 
 
 def _get_supported_validators() -> frozenset:
@@ -665,14 +663,14 @@ class TranslationProfileService:
 
         # --- protection ---
         protection = cfg.get("protection", {}) if isinstance(cfg.get("protection"), dict) else {}
-        strategy = protection.get("strategy", "")
-        if strategy and strategy not in _get_supported_protection_strategies():
+        # Validate rule_set_ids if present (they should exist in the rule set repo)
+        rule_set_ids = protection.get("rule_set_ids", [])
+        if not isinstance(rule_set_ids, list):
             diagnostics.append(ProfileDiagnostic(
                 level="error",
-                code=INVALID_PROTECTION_STRATEGY,
-                message=f"Unknown protection strategy: {strategy}. "
-                        f"Supported: {sorted(_get_supported_protection_strategies())}",
-                field="config.protection.strategy",
+                code=INVALID_PROFILE_FORMAT,
+                message="protection.rule_set_ids must be a list",
+                field="config.protection.rule_set_ids",
             ))
 
         # --- validation ---

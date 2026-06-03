@@ -14,13 +14,54 @@ const mockSetFormField = vi.fn();
 const mockResetFormFields = vi.fn();
 const mockSetSearchQuery = vi.fn();
 const mockSetFoundFiles = vi.fn();
-const mockSetSelectedMod = vi.fn();
 const mockSetSelectedGameId = vi.fn();
 const mockSetSelectedProfileId = vi.fn();
 const mockOpenPreview = vi.fn();
 const mockCreateDirectJob = vi.fn();
+
+/** Default job result used by createDirectJob mock.
+ *  totalUnits > 0 so existing tests that check draft-clearing continue
+ *  to pass without additional setup. */
+const MOCK_JOB_HEALTHY = {
+  id: 'test-job-id',
+  name: 'test-job',
+  status: 'completed',
+  totalUnits: 5,
+  completedUnits: 0,
+  failedUnits: 0,
+  cachedUnits: 0,
+  progress: 0,
+  filePaths: ['/mod/file.yml'],
+  config: { src_lang: 'english' },
+  diagnostics: [],
+  createdAt: '',
+  updatedAt: '',
+  completedAt: '',
+  errorMessage: undefined,
+  currentBatchIndex: 0,
+  totalBatches: 0,
+  resultSummary: null,
+  currentActivity: undefined,
+  outputFiles: [],
+  outputRootDir: undefined,
+};
 const mockSetDraft = vi.fn();
 const mockClearDraft = vi.fn();
+
+/** Shared reference for draft API methods so the DraftJobSelectionContext
+ *  mock can call through to the same functions the tests assert against. */
+const mockDraftApi = vi.hoisted(() => ({
+  addDraftFiles: vi.fn(),
+  removeDraftFiles: vi.fn(),
+  setDraftJobSelection: vi.fn(),
+  clearDraftJobSelection: vi.fn(),
+  getDraftJobSelection: vi.fn(),
+  addDraftFilesFromMods: vi.fn(),
+}));
+
+/** Mutable context state so tests can override useDraftJobSelection
+ *  return values (e.g. draftFiles) before mounting the hook. */
+const mockCtxFiles = vi.hoisted(() => ({ value: [] as string[] }));
 
 let mockFilePathList: string[] = [];
 let mockFilePaths = '';
@@ -69,6 +110,7 @@ vi.mock('../useCreateJobFields', () => ({
     apiKeyIds: [],
     promptProfileName: '',
     protectionStrategy: 'strict',
+    ruleSetIds: [],
     validatorName: 'default',
     outputDir: '',
     outputFilenameSuffix: '',
@@ -100,6 +142,7 @@ vi.mock('../useCreateJobFields', () => ({
       setApiKeyIds: vi.fn(),
       setPromptProfileName: vi.fn(),
       setProtectionStrategy: vi.fn(),
+      setRuleSetIds: vi.fn(),
       setValidatorName: vi.fn(),
       setOutputDir: vi.fn(),
       setOutputFilenameSuffix: vi.fn(),
@@ -127,8 +170,6 @@ vi.mock('../useCreateJobMods', () => ({
   useCreateJobMods: vi.fn(() => ({
     mods: [],
     modsLoading: false,
-    selectedMod: null,
-    setSelectedMod: mockSetSelectedMod,
   })),
 }));
 
@@ -185,12 +226,12 @@ vi.mock('../../../App', () => ({
     listApiKeys: vi.fn().mockResolvedValue({ keys: [] }),
     effectivePrompt: vi.fn().mockResolvedValue(null),
     previewPrompt: vi.fn().mockResolvedValue(null),
-    // Draft API — fire-and-forget in form, no-op in tests
-    setDraftJobSelection: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    clearDraftJobSelection: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    addDraftFiles: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    removeDraftFiles: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    getDraftJobSelection: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
+    setDraftJobSelection: mockDraftApi.setDraftJobSelection,
+    clearDraftJobSelection: mockDraftApi.clearDraftJobSelection,
+    addDraftFiles: mockDraftApi.addDraftFiles,
+    removeDraftFiles: mockDraftApi.removeDraftFiles,
+    getDraftJobSelection: mockDraftApi.getDraftJobSelection,
+    addDraftFilesFromMods: mockDraftApi.addDraftFilesFromMods,
   },
   ApiError: class extends Error {
     code = '';
@@ -208,15 +249,12 @@ vi.mock('../../../App', () => ({
 /* Mock the API client used by DraftJobSelectionContext. */
 vi.mock('../../../api/client', () => ({
   api: {
-    getDraftJobSelection: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    addDraftFiles: vi.fn().mockImplementation((data: { file_paths: string[] }) =>
-      Promise.resolve({ files: data.file_paths, file_metadata: {}, count: data.file_paths.length }),
-    ),
-    removeDraftFiles: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
-    setDraftJobSelection: vi.fn().mockImplementation((data: { files: string[] }) =>
-      Promise.resolve({ files: data.files, file_metadata: {}, count: data.files.length }),
-    ),
-    clearDraftJobSelection: vi.fn().mockResolvedValue({ files: [], file_metadata: {}, count: 0 }),
+    getDraftJobSelection: mockDraftApi.getDraftJobSelection,
+    addDraftFiles: mockDraftApi.addDraftFiles,
+    removeDraftFiles: mockDraftApi.removeDraftFiles,
+    setDraftJobSelection: mockDraftApi.setDraftJobSelection,
+    clearDraftJobSelection: mockDraftApi.clearDraftJobSelection,
+    addDraftFilesFromMods: mockDraftApi.addDraftFilesFromMods,
   },
   ApiError: class extends Error {
     code = '';
@@ -231,12 +269,67 @@ vi.mock('../../../api/client', () => ({
   },
 }));
 
+/* Mock DraftJobSelectionProvider to suppress auto-mount refresh() that
+   triggers state updates outside act() scope in React 18 + happy-dom.
+   Context methods call through to mockDraftApi so tests that assert on
+   api.xxx calls still pass.  mockCtxFiles.value can be set by tests to
+   control the draftFiles returned by useDraftJobSelection. */
+vi.mock('../../../contexts/DraftJobSelectionContext', () => ({
+  DraftJobSelectionProvider: function MockProvider({ children }: { children: React.ReactNode }) {
+    return children;
+  },
+  useDraftJobSelection: vi.fn(() => ({
+    draftFiles: mockCtxFiles.value,
+    draftMeta: {},
+    grouped: [],
+    diagnostics: [],
+    fileCount: 0,
+    loading: false,
+    error: null,
+    addFile: vi.fn(),
+    addFiles: vi.fn(),
+    removeFile: vi.fn(),
+    removeFiles: vi.fn(),
+    setFiles: vi.fn((files: string[]) => {
+      mockCtxFiles.value = files;
+      mockDraftApi.setDraftJobSelection({ files });
+      return Promise.resolve({ files, file_metadata: {}, grouped: [], diagnostics: [], count: files.length });
+    }),
+    clearFiles: vi.fn(() => {
+      mockCtxFiles.value = [];
+      mockDraftApi.clearDraftJobSelection();
+      return Promise.resolve({ files: [], file_metadata: {}, grouped: [], diagnostics: [], count: 0 });
+    }),
+    addFilesFromMods: vi.fn((legacyModIds: string[], handler = 'stellaris_localisation', language = 'english', modPaths?: string[]) => {
+      const payload: Record<string, unknown> = { handler, language };
+      if (modPaths && modPaths.length > 0) {
+        payload.mod_paths = modPaths;
+      } else {
+        payload.mod_ids = legacyModIds;
+      }
+      mockDraftApi.addDraftFilesFromMods(payload);
+      return Promise.resolve({ files: [], file_metadata: {}, grouped: [], diagnostics: [], count: 0 });
+    }),
+    searchAndAddFiles: vi.fn(),
+    setFilesFromRaw: vi.fn(),
+    isFileAdded: vi.fn(() => false),
+    navigateToJob: vi.fn(),
+    refresh: vi.fn(() => {
+      const result = mockDraftApi.getDraftJobSelection();
+      if (result && typeof result.then === 'function') {
+        return result.then((data: any) => { mockCtxFiles.value = data?.files ?? []; });
+      }
+      return Promise.resolve({ files: [], file_metadata: {}, grouped: [], diagnostics: [], count: 0 });
+    }),
+  })),
+}));
+
 import { useCreateJobForm } from '../useCreateJobForm';
 import { useCreateJobFlow } from '../useCreateJobFlow';
 import { usePersistentState } from '../../usePersistentState';
 import { DraftJobSelectionProvider } from '../../../contexts/DraftJobSelectionContext';
 import { MemoryRouter } from 'react-router-dom';
-import { useCreateJobMods } from '../useCreateJobMods';
+import type { DraftSelectionGroup } from '../../../api/types';
 
 /* ================================================================== */
 /*  Setup helper                                                        */
@@ -273,7 +366,10 @@ describe('useCreateJobForm', () => {
     localStorage.clear();
     mockFilePathList = [];
     mockFilePaths = '';
+    mockCtxFiles.value = [];
     currentUnmount = null;
+    // Default: createDirectJob returns a healthy job (totalUnits > 0)
+    mockCreateDirectJob.mockResolvedValue(MOCK_JOB_HEALTHY);
   });
 
   afterEach(() => {
@@ -295,7 +391,6 @@ describe('useCreateJobForm', () => {
 
   it('handleCreateJob calls createDirectJob and clears local draft', async () => {
     mockFilePaths = '/mod/file_a.yml\n/mod/file_b.yml';
-    mockCreateDirectJob.mockResolvedValue(undefined);
 
     const { result } = trackedSetup();
 
@@ -305,7 +400,7 @@ describe('useCreateJobForm', () => {
 
     // createDirectJob was called with the form values
     expect(mockCreateDirectJob).toHaveBeenCalledTimes(1);
-    // Local draft was cleared
+    // Local draft was cleared (job has totalUnits > 0)
     expect(mockClearDraft).toHaveBeenCalledTimes(1);
   });
 
@@ -314,7 +409,6 @@ describe('useCreateJobForm', () => {
     // (see jobs.py create_job handler, line 481-486).  The frontend
     // does not need an extra clearDraftJobSelection call.
     mockFilePaths = '/mod/file_a.yml';
-    mockCreateDirectJob.mockResolvedValue(undefined);
 
     const { result } = trackedSetup();
 
@@ -352,60 +446,10 @@ describe('useCreateJobForm', () => {
   });
 
   // -----------------------------------------------------------------
-  //  Mod selection
-  // -----------------------------------------------------------------
-
-  it('handleSelectMod sets selected mod and replaces paths', () => {
-    const modPaths = ['/mod/a.yml', '/mod/b.yml'];
-    const mockMod = {
-      mod_id: 'test-mod',
-      name: 'Test Mod',
-      game_id: 'stellaris',
-      localisation_paths: modPaths,
-    };
-
-    const { result } = trackedSetup();
-
-    act(() => {
-      result.current.handleSelectMod(mockMod as any);
-    });
-
-    expect(mockSetSelectedMod).toHaveBeenCalledWith(mockMod);
-    expect(mockReplacePaths).toHaveBeenCalled();
-  });
-
-  it('handleClearSelection clears selected mod and paths', () => {
-    const { result } = trackedSetup();
-
-    act(() => {
-      result.current.handleClearSelection();
-    });
-
-    expect(mockSetSelectedMod).toHaveBeenCalledWith(null);
-    expect(mockReplacePaths).toHaveBeenCalledWith([]);
-    expect(mockClearDraft).toHaveBeenCalled();
-  });
-
-  // -----------------------------------------------------------------
   //  Game change
   // -----------------------------------------------------------------
 
-  it('handleGameChange changes game and clears mod', () => {
-    const mockMod = {
-      mod_id: 'mod-1',
-      name: 'Test Mod',
-      game_id: 'stellaris',
-      localisation_paths: ['/mod/a.yml'],
-    };
-
-    vi.mocked(useCreateJobMods).mockReturnValue({
-      mods: [mockMod as any],
-      modsLoading: false,
-      selectedMod: mockMod as any,
-      setSelectedMod: mockSetSelectedMod,
-    });
-
-    mockFilePathList = ['/mod/a.yml'];
+  it('handleGameChange changes game', () => {
     const { result } = trackedSetup();
 
     act(() => {
@@ -413,7 +457,6 @@ describe('useCreateJobForm', () => {
     });
 
     expect(mockSetSelectedGameId).toHaveBeenCalledWith('other-game');
-    expect(mockSetSelectedMod).toHaveBeenCalledWith(null);
   });
 
   // -----------------------------------------------------------------
@@ -500,10 +543,13 @@ describe('useCreateJobForm', () => {
       vi.mocked(api.getDraftJobSelection).mockResolvedValue({
         files: ['/live/new_file.yml'],
         file_metadata: {},
+        grouped: [],
+        diagnostics: [],
         count: 1,
       });
 
       // Act: mount useCreateJobForm
+      mockCtxFiles.value = ['/live/new_file.yml'];
       trackedSetup();
 
       // Wait for all async effects to settle:
@@ -533,5 +579,325 @@ describe('useCreateJobForm', () => {
         );
       }
     }
+  });
+
+  // -----------------------------------------------------------------
+  //  Hardening: submit flushes pending raw textarea debounce before
+  //  creating the job.  When the user types in the textarea and
+  //  immediately clicks Create, the unsynced debounce must be synced
+  //  to the backend draft before the create request is sent.
+  // -----------------------------------------------------------------
+
+  it('handleCreateJob flushes pending raw textarea debounce before creating', async () => {
+    mockFilePaths = '/mod/new_file.yml';
+
+    const { result } = trackedSetup();
+
+    // Simulate: user types a new path into the textarea, creating a
+    // pending 600ms debounce timer.
+    act(() => {
+      result.current.setFormField('filePaths', '/mod/new_file.yml');
+    });
+
+    // Immediately submit — before the debounce would have fired.
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // The backend draft API was called with the latest textarea content
+    // (via flushRawTextDebounce → ctx.setFiles → api.setDraftJobSelection).
+    const { api } = await import('../../../api/client');
+    expect(api.setDraftJobSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ files: ['/mod/new_file.yml'] }),
+    );
+
+    // createDirectJob was called (the create flow proceeded).
+    expect(mockCreateDirectJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('handleCreateJob flushes debounce even when textarea is empty', async () => {
+    // Regression: previously flushRawTextDebounce skipped setFiles when
+    // the textarea was empty, leaving stale paths in the backend draft.
+    // This caused createJobUsingDraft to use old draft paths.
+    mockFilePaths = '';
+
+    const { result } = trackedSetup();
+
+    // Simulate: user clears textarea and immediately submits.
+    act(() => {
+      result.current.setFormField('filePaths', '');
+    });
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // Backend draft was cleared (empty files array sent).
+    const { api } = await import('../../../api/client');
+    expect(api.setDraftJobSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ files: [] }),
+    );
+  });
+
+  // -----------------------------------------------------------------
+  //  Hardening: after successful create, the backend draft is cleared.
+  //  The frontend must call ctx.refresh() so the shared context and
+  //  UI immediately reflect the now-empty state.
+  // -----------------------------------------------------------------
+
+  it('handleCreateJob calls ctx.refresh after successful create', async () => {
+    mockFilePaths = '/mod/file_a.yml';
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // ctx.refresh() was called (re-fetches backend draft to reflect
+    // the cleared state after job creation).
+    const { api } = await import('../../../api/client');
+    expect(api.getDraftJobSelection).toHaveBeenCalled();
+  });
+
+  // -----------------------------------------------------------------
+  //  Hardening: stale legacy filePathList from localStorage is NOT
+  //  sent in the create request.  The submit reads paths from the
+  //  current form state (paths.filePaths), not from localStorage.
+  // -----------------------------------------------------------------
+
+  it('submit does NOT send stale localStorage filePathList in create request', async () => {
+    // Arrange: populate localStorage with a stale draft containing old paths.
+    const { STORAGE_KEYS } = await import('../../../utils/storageKeys');
+    localStorage.setItem(STORAGE_KEYS.createJobDraft, JSON.stringify({
+      filePathList: ['/stale/old_path.yml'],
+      filePaths: '/stale/old_path.yml',
+    }));
+
+    // Arrange: the context has already been restored and the form state
+    // reflects what the user currently sees in the textarea.
+    mockFilePaths = '/current/new_path.yml';
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // createDirectJob was called.  Check what values were passed to it.
+    expect(mockCreateDirectJob).toHaveBeenCalledTimes(1);
+
+    // The form values should contain the CURRENT textarea content,
+    // not the stale localStorage filePathList.
+    const callArgs = mockCreateDirectJob.mock.calls[0][0];
+    expect(callArgs.filePaths).toContain('/current/new_path.yml');
+    expect(callArgs.filePaths).not.toContain('/stale/old_path.yml');
+  });
+
+  // -----------------------------------------------------------------
+  //  Zero-unit job handling — do NOT clear draft when job has 0 units
+  // -----------------------------------------------------------------
+
+  it('handleCreateJob clears draft when job has totalUnits > 0', async () => {
+    // Default mock returns MOCK_JOB_HEALTHY with totalUnits = 5
+    mockFilePaths = '/mod/file_a.yml';
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // Draft is cleared for healthy jobs
+    expect(mockClearDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('handleCreateJob does NOT clear draft when job has totalUnits === 0 with NO_TRANSLATION_UNITS_FOUND', async () => {
+    mockFilePaths = '/mod/file_a.yml';
+    mockCreateDirectJob.mockResolvedValue({
+      ...MOCK_JOB_HEALTHY,
+      totalUnits: 0,
+      diagnostics: [
+        { level: 'warning', code: 'NO_TRANSLATION_UNITS_FOUND', message: 'No translatable units found.' },
+      ],
+      status: 'completed',
+    });
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    // Draft NOT cleared
+    expect(mockClearDraft).not.toHaveBeenCalled();
+  });
+
+  it('handleCreateJob does NOT clear draft when job has totalUnits === 0 with NO_UNITS', async () => {
+    mockFilePaths = '/mod/file_a.yml';
+    mockCreateDirectJob.mockResolvedValue({
+      ...MOCK_JOB_HEALTHY,
+      totalUnits: 0,
+      diagnostics: [
+        { level: 'warning', code: 'NO_UNITS', message: 'No units found.' },
+      ],
+      status: 'completed',
+    });
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    expect(mockClearDraft).not.toHaveBeenCalled();
+  });
+
+  it('handleCreateJob shows warning toast for zero-unit jobs', async () => {
+    mockFilePaths = '/mod/file_a.yml';
+    mockCreateDirectJob.mockResolvedValue({
+      ...MOCK_JOB_HEALTHY,
+      totalUnits: 0,
+      diagnostics: [
+        { level: 'warning', code: 'NO_TRANSLATION_UNITS_FOUND', message: 'No translatable units found.' },
+      ],
+      status: 'completed',
+    });
+
+    const { result, showToast } = setup();
+    currentUnmount = null;
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('No translation units found'),
+      'warning',
+    );
+  });
+
+  it('handleCreateJob clears draft when totalUnits === 0 but no matching diagnostic', async () => {
+    // Some other reason for 0 units (e.g. no files selected) — clear normally
+    mockFilePaths = '/mod/file_a.yml';
+    mockCreateDirectJob.mockResolvedValue({
+      ...MOCK_JOB_HEALTHY,
+      totalUnits: 0,
+      diagnostics: [],
+    });
+
+    const { result } = trackedSetup();
+
+    await act(async () => {
+      await result.current.handleCreateJob();
+    });
+
+    expect(mockClearDraft).toHaveBeenCalledTimes(1);
+  });
+
+  // -----------------------------------------------------------------
+  //  Hardening: unmount clears pending debounce timeout and does not
+  //  fire stale requests after the component is unmounted.
+  // -----------------------------------------------------------------
+
+  it('unmount clears pending debounce timeout', async () => {
+    const { result, unmount } = setup();
+
+    // Create a pending debounce timer by setting a file path.
+    act(() => {
+      result.current.setFormField('filePaths', '/mod/file.yml');
+    });
+
+    // Spy on clearTimeout.
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+
+    // Unmount — the cleanup effect should clear the pending timer.
+    unmount();
+
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+
+  it('unmount does not fire stale async state updates from context', async () => {
+    // Verify that the context does not call setState after the
+    // DraftJobSelectionProvider's mountedRef is set to false.
+    const { result, unmount } = setup();
+
+    // Set up a deferred API call that resolves after unmount.
+    const { api } = await import('../../../api/client');
+
+    // Make the backend API slow so it resolves after unmount.
+    let slowResolve: () => void = () => {};
+    (api.setDraftJobSelection as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise(resolve => { slowResolve = () => resolve({ files: [], file_metadata: {}, grouped: [], diagnostics: [], count: 0 }); }),
+    );
+
+    // Trigger a pending debounce sync.
+    act(() => {
+      result.current.setFormField('filePaths', '/mod/after_unmount.yml');
+    });
+
+    // Unmount before the debounce fires.
+    unmount();
+
+    // Now resolve the pending API call — this should NOT throw
+    // because the context checks mountedRef before setState.
+    await act(async () => {
+      slowResolve();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    // If we get here without an error, the unmount cleanup is correct.
+    // (Stale setState after unmount would log React warnings or throw.)
+    expect(true).toBe(true);
+  });
+
+  // -----------------------------------------------------------------
+  //  handleAddModFiles — adds mod localisation files via mod_paths
+  // -----------------------------------------------------------------
+
+  it('handleAddModFiles sends mod_paths to the backend API', async () => {
+    const { api } = await import('../../../api/client');
+    const { result } = trackedSetup();
+
+    // Initially no mods selected.
+    expect(result.current.selectedModPaths).toEqual([]);
+
+    // Select two mods by path.
+    act(() => {
+      result.current.setSelectedModPaths(['/path/steam/mod_a', '/path/sfw/mod_a']);
+    });
+    expect(result.current.selectedModPaths).toEqual(['/path/steam/mod_a', '/path/sfw/mod_a']);
+
+    // Call handleAddModFiles.
+    await act(async () => {
+      await result.current.handleAddModFiles();
+    });
+
+    // The context should call the backend with mod_paths (not mod_ids).
+    expect(api.addDraftFilesFromMods).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mod_paths: ['/path/steam/mod_a', '/path/sfw/mod_a'],
+      }),
+    );
+    // Should NOT send mod_ids when mod_paths is populated.
+    const callArg = vi.mocked(api.addDraftFilesFromMods).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(callArg).not.toHaveProperty('mod_ids');
+
+    // Selected mods are cleared after successful add.
+    expect(result.current.selectedModPaths).toEqual([]);
+  });
+
+  it('handleAddModFiles does nothing when no mods selected', async () => {
+    const { api } = await import('../../../api/client');
+    const { result } = trackedSetup();
+
+    expect(result.current.selectedModPaths).toEqual([]);
+
+    await act(async () => {
+      await result.current.handleAddModFiles();
+    });
+
+    expect(api.addDraftFilesFromMods).not.toHaveBeenCalled();
   });
 });

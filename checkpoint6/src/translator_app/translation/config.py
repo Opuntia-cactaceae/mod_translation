@@ -41,9 +41,18 @@ class PromptConfig:
 
 @dataclass
 class ProtectionConfig:
-    """15.3 Protection config — strategy name and options."""
-    strategy: str = ""
-    options: Dict[str, Any] = field(default_factory=dict)
+    """15.3 Protection config — rule-set-driven protection.
+
+    ``rule_set_ids`` lists the active protection rule sets.
+    ``enabled`` controls whether protection is applied at all.
+
+    Old ``strategy`` field is kept for backward compatibility when
+     deserializing saved job configs; it is mapped to the default
+     rule set at load time.
+    """
+    rule_set_ids: List[str] = field(default_factory=list)
+    enabled: bool = True
+    strategy: str = ""  # legacy, mapped to rule_set_ids at load
 
 
 @dataclass
@@ -233,7 +242,6 @@ class TranslationConfigBuilder:
 
         protection = ProtectionConfig(
             strategy=defaults.get("protection_strategy", ""),
-            options=defaults.get("protection_options", {}),
         )
 
         validation = ValidationConfig(
@@ -474,7 +482,7 @@ class TranslationConfigBuilder:
 
         # --- protection fields ---
         _set_if(flat, config.protection, "strategy")
-        _set_if_dict(flat, config.protection, "options")
+        _set_if_list(flat, config.protection, "rule_set_ids")
 
         # --- validation fields ---
         _set_if(flat, config.validation, "validator_name")
@@ -525,7 +533,7 @@ class TranslationConfigBuilder:
 
         for prefix_key, attr_name in [
             ("protection.strategy", "strategy"),
-            ("protection.options", "options"),
+            ("protection.rule_set_ids", "rule_set_ids"),
         ]:
             _set_if(flat, config.protection, attr_name, key=prefix_key)
 
@@ -656,15 +664,15 @@ def _validate_config(config, secrets_service=None, prompt_registry=None):
     _check_unknown_placeholders(config, _error)
 
     # ---- Protection validation ----
-    if config.protection.strategy:
-        supported_strategies = _get_supported_protection_strategies()
-        if config.protection.strategy not in supported_strategies:
-            _error(
-                INVALID_PROTECTION_STRATEGY,
-                f"Unknown protection strategy: {config.protection.strategy}. "
-                f"Supported: {sorted(supported_strategies)}",
-                "protection.strategy",
-            )
+    if config.protection.rule_set_ids:
+        # Basic validation: rule_set_ids must be a list of non-empty strings
+        for rs_id in config.protection.rule_set_ids:
+            if not isinstance(rs_id, str) or not rs_id.strip():
+                _error(
+                    INVALID_PROTECTION_STRATEGY,
+                    f"Invalid rule set ID: {rs_id!r}",
+                    "protection.rule_set_ids",
+                )
 
     # ---- Validation config validation ----
     if config.validation.validator_name:
@@ -755,7 +763,7 @@ def _to_benchmark_config(config: TranslationConfig) -> Dict[str, Any]:
         },
         "protection": {
             "strategy_name": config.protection.strategy,
-            "options": dict(config.protection.options),
+            "rule_set_ids": list(config.protection.rule_set_ids),
         },
         "validation": {
             "validator_name": config.validation.validator_name,
@@ -810,7 +818,7 @@ def _from_benchmark_config(data: Dict[str, Any]) -> TranslationConfig:
         ),
         protection=ProtectionConfig(
             strategy=prot.get("strategy_name", ""),
-            options=dict(prot.get("options", {})),
+            rule_set_ids=list(prot.get("rule_set_ids", [])),
         ),
         validation=ValidationConfig(
             validator_name=v.get("validator_name", ""),
@@ -898,6 +906,30 @@ def _config_to_dict(config: TranslationConfig) -> Dict[str, Any]:
     return asdict(config)
 
 
+def _migrate_protection_config(data: dict) -> dict:
+    """Backward-compat: migrate legacy protection config to rule-set-driven.
+
+    Old configs stored ``strategy`` (e.g. ``"legacy_game_tokens"``).
+    New configs store ``rule_set_ids``.  If the old field is present and
+    ``rule_set_ids`` is empty, we map known strategies to the default
+    rule set.
+    """
+    prot = data.get("protection")
+    if not isinstance(prot, dict):
+        return data
+    # If rule_set_ids is already present and non-empty, leave it alone
+    if prot.get("rule_set_ids"):
+        return data
+    # If old strategy is set (and not "none"), default to builtin rule set
+    old_strategy = prot.get("strategy", "")
+    if old_strategy and old_strategy != "none":
+        from translator_app.protection.rule_set import DEFAULT_RULE_SET_ID
+        prot["rule_set_ids"] = [DEFAULT_RULE_SET_ID]
+    # Remove old strategy field to avoid confusion (it will still deserialize)
+    # but we keep it for backward re-serialization
+    return data
+
+
 def config_from_dict(data: Optional[Dict[str, Any]]) -> Optional[TranslationConfig]:
     """Rehydrate a ``TranslationConfig`` from a plain dict.
 
@@ -909,6 +941,7 @@ def config_from_dict(data: Optional[Dict[str, Any]]) -> Optional[TranslationConf
     """
     if data is None:
         return None
+    data = _migrate_protection_config(dict(data))
     flat = dict(data)  # shallow copy, we'll pop nested keys
     sub_configs: Dict[str, type] = {
         "runtime": RuntimeConfig,
@@ -958,7 +991,7 @@ def _get_supported_protection_strategies() -> frozenset:
 
         return _res()
     except Exception:
-        return frozenset({"none", "legacy_game_tokens", "xml_placeholders"})
+        return frozenset({"none", "rule_set"})
 
 
 def _get_supported_validators() -> frozenset:

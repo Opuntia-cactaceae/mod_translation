@@ -62,6 +62,7 @@ const BASE_FORM_VALUES = {
   apiKeyIds: ['key-1'],
   promptProfileName: '',
   protectionStrategy: 'strict',
+  ruleSetIds: [],
   validatorName: 'default',
   outputDir: '',
   outputFilenameSuffix: '',
@@ -393,8 +394,8 @@ describe('useCreateJobFlow — file_metadata in create request', () => {
     expect(payload.file_metadata['/b.yml'].mod_id).toBe('mod-2');
     expect(payload.file_metadata['/c.yml'].mod_id).toBe('mod-3');
 
-    const allModIds = Object.values(payload.file_metadata).map(
-      (m: Record<string, string>) => m.mod_id,
+    const allModIds = Object.values(payload.file_metadata || {}).map(
+      (m: unknown) => (m as Record<string, string>).mod_id,
     );
     expect(new Set(allModIds).size).toBe(3); // all three are distinct
   });
@@ -910,5 +911,149 @@ describe('useCreateJobFlow — file_metadata in create request', () => {
       // Draft clearing on the backend is verified in test_draft_job_selection_api.py.
       expect(mockClearDraftJobSelection).not.toHaveBeenCalled();
     });
+
+    // -----------------------------------------------------------------
+    //  Hardening: draft mode (createJobUsingDraft) sends use_draft_selection
+    //  with empty file_paths so the backend reads from its persisted draft.
+    // -----------------------------------------------------------------
+
+    it('draft mode sends use_draft_selection=true and empty file_paths', async () => {
+      mockCreateJob.mockResolvedValue({
+        id: 'job-draft-mode',
+        status: 'pending',
+        file_paths: ['/from/draft/a.yml'],
+      });
+
+      const { result } = setup();
+
+      const formValues = {
+        ...BASE_FORM_VALUES,
+        filePaths: '',  // empty textarea → trigger createJobUsingDraft
+      };
+
+      await act(async () => {
+        await result.current.createDirectJob(formValues, null);
+      });
+
+      // createJobUsingDraft sent use_draft_selection with no file_paths.
+      expect(mockCreateJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file_paths: [],
+          use_draft_selection: true,
+        }),
+      );
+
+      // No explicit file_paths were sent.
+      const payload = mockCreateJob.mock.calls[0][0];
+      expect(payload.file_paths).toEqual([]);
+    });
+
+    it('draft mode does NOT send stale file_paths alongside use_draft_selection', async () => {
+      // Regression: if use_draft_selection=true AND file_paths is non-empty,
+      // the backend skips the draft (explicit precedence).  The frontend
+      // must never send file_paths when using draft mode.
+      mockCreateJob.mockResolvedValue({
+        id: 'job-no-stale-paths',
+        status: 'pending',
+        file_paths: [],
+      });
+
+      const { result } = setup();
+
+      const formValues = {
+        ...BASE_FORM_VALUES,
+        filePaths: '',  // empty → draft mode
+      };
+
+      await act(async () => {
+        await result.current.createDirectJob(formValues, null);
+      });
+
+      const payload = mockCreateJob.mock.calls[0][0];
+
+      // When using draft mode, file_paths must be empty (so the backend
+      // reads from its draft rather than using explicit paths).
+      expect(payload.use_draft_selection).toBe(true);
+      expect(payload.file_paths).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------
+  //  Hardening: textarea path submit (non-draft) also works correctly
+  // -----------------------------------------------------------------
+
+  it('non-draft mode does not send use_draft_selection', async () => {
+    backendMeta = {};
+    mockCreateJob.mockResolvedValue({
+      id: 'job-explicit',
+      status: 'pending',
+      file_paths: ['/a.yml'],
+    });
+
+    const { result } = setup();
+
+    const formValues = {
+      ...BASE_FORM_VALUES,
+      filePaths: '/a.yml',  // non-empty → explicit path mode
+    };
+
+    await act(async () => {
+      await result.current.createDirectJob(formValues, null);
+    });
+
+    const payload = mockCreateJob.mock.calls[0][0];
+
+    // Explicit path mode: file_paths is the source of truth.
+    expect(payload.file_paths).toEqual(['/a.yml']);
+    // No draft flag when paths are explicit.
+    expect(payload.use_draft_selection).toBeUndefined();
+  });
+
+  // -----------------------------------------------------------------
+  //  Return value — createDirectJob exposes the mapped job to callers
+  // -----------------------------------------------------------------
+
+  it('createDirectJob returns the mapped job', async () => {
+    mockCreateJob.mockResolvedValue({
+      id: 'returned-job-42',
+      name: 'test',
+      status: 'completed',
+      file_paths: ['/a.yml'],
+      config: { src_lang: 'english', dst_lang: 'russian' },
+      total_units: 10,
+      completed_units: 0,
+      failed_units: 0,
+      cached_units: 0,
+      progress: 0,
+      created_at: '',
+      updated_at: null,
+      completed_at: null,
+      error_message: null,
+      current_batch_index: 0,
+      total_batches: 0,
+      diagnostics: [],
+      result_summary: null,
+      current_activity: null,
+      output_files: [],
+      output_root_dir: null,
+    });
+
+    const { result } = setup();
+
+    let returned: unknown;
+    const formValues = {
+      ...BASE_FORM_VALUES,
+      filePaths: '/a.yml',
+    };
+
+    await act(async () => {
+      returned = await result.current.createDirectJob(formValues, null);
+    });
+
+    expect(returned).toBeDefined();
+    expect(returned).toHaveProperty('id', 'returned-job-42');
+    expect(returned).toHaveProperty('totalUnits', 10);
+    expect(returned).toHaveProperty('config');
+    expect((returned as Record<string, unknown>).config).toHaveProperty('src_lang', 'english');
   });
 });

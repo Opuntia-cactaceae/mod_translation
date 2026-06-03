@@ -10,43 +10,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from translator_app.languages import resolve_code, resolve_stellaris_token
 from translator_app.output.models import OutputNameResult, OutputNamingOptions
-
-# Mapping from ISO language codes to Stellaris full language names.
-# Used when replacing ``l_<lang>`` patterns in localisation file names.
-LANG_CODE_TO_FULL = {
-    "en": "english",
-    "ru": "russian",
-    "fr": "french",
-    "de": "german",
-    "es": "spanish",
-    "it": "italian",
-    "pt": "portuguese",
-    "pl": "polish",
-    "ja": "japanese",
-    "ko": "korean",
-    "zh": "chinese",
-    "ar": "arabic",
-    "tr": "turkish",
-    "nl": "dutch",
-    "sv": "swedish",
-    "da": "danish",
-    "fi": "finnish",
-    "no": "norwegian",
-    "cs": "czech",
-    "hu": "hungarian",
-    "ro": "romanian",
-    "uk": "ukrainian",
-    "el": "greek",
-    "he": "hebrew",
-    "th": "thai",
-    "vi": "vietnamese",
-    "id": "indonesian",
-    "ms": "malay",
-}
-
-# Reverse mapping: full name → ISO code.
-FULL_TO_LANG_CODE = {v: k for k, v in LANG_CODE_TO_FULL.items()}
 
 # Regex to detect Stellaris localisation language pattern: ``_l_<language_name>``
 # e.g. ``events_l_english.yml``, ``mod_text_l_russian.yml``
@@ -218,9 +183,9 @@ class OutputNamingService:
         2. Otherwise append ``_<dst_lang>`` (or ``_<src_lang>_<dst_lang>`` when
            ``include_lang`` is True).
         """
-        src_full = LANG_CODE_TO_FULL.get(src_lang, src_lang)
-        dst_full = LANG_CODE_TO_FULL.get(dst_lang, dst_lang)
-        dst_code = FULL_TO_LANG_CODE.get(dst_lang, dst_lang)
+        src_full = resolve_stellaris_token(src_lang) or src_lang
+        dst_full = resolve_stellaris_token(dst_lang) or dst_lang
+        dst_code = resolve_code(dst_lang) or dst_lang
 
         # Try to match _l_<language> pattern
         match = LANG_PATTERN_RE.search(base)
@@ -232,7 +197,7 @@ class OutputNamingService:
 
         # No Stellaris pattern: append language suffix
         if options.include_lang:
-            src_code = FULL_TO_LANG_CODE.get(src_lang, src_lang)
+            src_code = resolve_code(src_lang) or src_lang
             return f"{base}_{src_code}_{dst_code}"
 
         return f"{base}_{dst_code}"
@@ -345,7 +310,7 @@ class OutputNamingService:
         match = LANG_PATTERN_RE.search(base_no_ext)
         if match:
             lang = match.group(1)
-            code = FULL_TO_LANG_CODE.get(lang)
+            code = resolve_code(lang)
             if code:
                 return code
             return lang

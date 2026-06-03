@@ -10,6 +10,7 @@ const mockApi = vi.hoisted(() => ({
   createJob: vi.fn(),
   startJob: vi.fn(),
   retryFailed: vi.fn(),
+  restartJob: vi.fn(),
 }));
 
 vi.mock('../../../App', () => ({
@@ -88,8 +89,10 @@ describe('useJobRecovery', () => {
 
   describe('restartJob', () => {
     it('creates new job, starts it, shows success toast, selects, reloads', async () => {
-      mockApi.createJob.mockResolvedValue({ id: 'new-job-1', name: 'Test Job (restart)' });
-      mockApi.startJob.mockResolvedValue({ success: true, message: 'ok' });
+      mockApi.restartJob.mockResolvedValue({
+        success: true,
+        job: { id: 'new-job-1', name: 'Test Job (restart)', total_units: 10 },
+      });
 
       const { result, reloadJobs, selectJob, showToast } = setup();
       const job = createJob();
@@ -98,20 +101,17 @@ describe('useJobRecovery', () => {
         await result.current.restartJob(job);
       });
 
-      expect(mockApi.createJob).toHaveBeenCalledWith({
-        file_paths: job.filePaths,
-        name: 'Test Job (restart)',
-        config: { model: 'gpt-4' },
-      });
-      expect(mockApi.startJob).toHaveBeenCalledWith('new-job-1');
-      expect(showToast).toHaveBeenCalledWith('New job created and started: "Test Job (restart)"');
+      expect(mockApi.restartJob).toHaveBeenCalledWith('job-1');
+      expect(showToast).toHaveBeenCalledWith('Restart job created: "Test Job (restart)" with 10 units');
       expect(selectJob).toHaveBeenCalledWith('new-job-1');
       expect(reloadJobs).toHaveBeenCalledTimes(1);
     });
 
     it('uses default name when job has no name', async () => {
-      mockApi.createJob.mockResolvedValue({ id: 'new-job-2', name: ' (restart)' });
-      mockApi.startJob.mockResolvedValue({ success: true, message: 'ok' });
+      mockApi.restartJob.mockResolvedValue({
+        success: true,
+        job: { id: 'new-job-2', name: ' (restart)', total_units: 10 },
+      });
 
       const { result, showToast } = setup();
       const job = createJob({ name: '' });
@@ -120,12 +120,8 @@ describe('useJobRecovery', () => {
         await result.current.restartJob(job);
       });
 
-      expect(mockApi.createJob).toHaveBeenCalledWith({
-        file_paths: job.filePaths,
-        name: undefined,
-        config: { model: 'gpt-4' },
-      });
-      expect(showToast).toHaveBeenCalledWith('New job created and started: " (restart)"');
+      expect(mockApi.restartJob).toHaveBeenCalledWith('job-1');
+      expect(showToast).toHaveBeenCalledWith('Restart job created: " (restart)" with 10 units');
     });
 
     it('shows error toast when job has no filePaths', async () => {
@@ -137,7 +133,7 @@ describe('useJobRecovery', () => {
       });
 
       expect(showToast).toHaveBeenCalledWith('Cannot restart: no file paths', 'error');
-      expect(mockApi.createJob).not.toHaveBeenCalled();
+      expect(mockApi.restartJob).not.toHaveBeenCalled();
     });
 
     it('shows error toast when job has no config', async () => {
@@ -149,12 +145,12 @@ describe('useJobRecovery', () => {
       });
 
       expect(showToast).toHaveBeenCalledWith('Cannot restart: no config', 'error');
-      expect(mockApi.createJob).not.toHaveBeenCalled();
+      expect(mockApi.restartJob).not.toHaveBeenCalled();
     });
 
     it('shows ApiError message toast on ApiError rejection', async () => {
       const { ApiError } = await import('../../../App');
-      mockApi.createJob.mockRejectedValue(
+      mockApi.restartJob.mockRejectedValue(
         new ApiError({ message: 'Creation failed', code: 'ERR', details: {}, recoverable: false }),
       );
 
@@ -168,7 +164,7 @@ describe('useJobRecovery', () => {
     });
 
     it('shows generic error toast on unknown error', async () => {
-      mockApi.createJob.mockRejectedValue(new Error('Network failure'));
+      mockApi.restartJob.mockRejectedValue(new Error('Network failure'));
 
       const { result, showToast } = setup();
 
@@ -180,11 +176,10 @@ describe('useJobRecovery', () => {
     });
 
     it('sets restartingJobId during operation and clears after', async () => {
-      let deferredResolve!: (v: { id: string; name: string }) => void;
-      mockApi.createJob.mockImplementation(
+      let deferredResolve!: (v: { success: boolean; job: { id: string; name: string; total_units: number } }) => void;
+      mockApi.restartJob.mockImplementation(
         () => new Promise(resolve => { deferredResolve = resolve; }),
       );
-      mockApi.startJob.mockResolvedValue({ success: true, message: 'ok' });
 
       const { result } = setup();
       const promise = result.current.restartJob(createJob());
@@ -194,7 +189,7 @@ describe('useJobRecovery', () => {
       });
 
       await act(async () => {
-        deferredResolve({ id: 'new-job-1', name: 'Test Job (restart)' });
+        deferredResolve({ success: true, job: { id: 'new-job-1', name: 'Test Job (restart)', total_units: 10 } });
       });
       await promise;
 

@@ -34,6 +34,16 @@ class TaskPlanSummary(BaseModel):
     cache_misses: int = 0
 
 
+class OutputFileRef(BaseModel):
+    """Lightweight reference linking a job output file path to its DB id.
+
+    Added in migration PR #1 to enable navigation from Jobs page to the
+    new session-based OutputFileEditor without breaking backward compat.
+    """
+    id: str
+    path: str
+
+
 class JobResponse(BaseModel):
     """Full job representation returned by the API."""
     id: str
@@ -49,9 +59,12 @@ class JobResponse(BaseModel):
     total_batches: int = 0
     created_at: str = ""
     updated_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
     error_message: Optional[str] = None
     file_paths: List[str] = []
     output_files: List[str] = []
+    output_file_refs: List[OutputFileRef] = []
     output_root_dir: Optional[str] = None
     progress_detail: Optional[JobProgressResponse] = None
     task_plan_summary: Optional[TaskPlanSummary] = None
@@ -73,6 +86,7 @@ class JobSummaryResponse(BaseModel):
     current_batch_index: int = 0
     total_batches: int = 0
     updated_at: Optional[str] = None
+    completed_at: Optional[str] = None
     active_worker: bool = False
     error_message: Optional[str] = None
 
@@ -99,6 +113,9 @@ class CreateJobRequest(BaseModel):
     mod_name: Optional[str] = None
     # Per-file metadata keyed by file path (same normalised keys as file_paths).
     file_metadata: Optional[Dict[str, FileJobMetadata]] = None
+    # When True and file_paths is empty, backend fills paths from the draft
+    # job selection state.  If draft is also empty, raises a validation error.
+    use_draft_selection: bool = False
 
 
 class JobActionResponse(BaseModel):

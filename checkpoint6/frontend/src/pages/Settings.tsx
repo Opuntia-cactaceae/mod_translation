@@ -3,10 +3,12 @@ import { api, ApiError, useToast } from '../App';
 import type { ApiKeyResponse, GameOption, FileHandlerOption, TestKeyResponse, TranslationProfile, TranslationOptionsResponse } from '../api/types';
 import { PathPicker } from '../components';
 import ProfileEditorModal from '../components/profiles/ProfileEditorModal';
+import ProviderModelsSection from '../components/settings/ProviderModelsSection';
 import {
   mapProfile, isReadonlyProfile, deduplicateProfiles, appendProfileUnique, removeProfile,
   type ProfileModel,
 } from '../domain';
+import LanguageDropdown from '../components/common/LanguageDropdown';
 import { flattenSettings, nestSettings } from '../domain/settings';
 
 /* ================================================================== */
@@ -396,8 +398,8 @@ export default function Settings() {
       <div className="card">
         <div className="card-title">Application Settings</div>
 
-        {renderSettingInput(settings, 'default_src_lang', 'Default Source Language', handleSettingChange)}
-        {renderSettingInput(settings, 'default_dst_lang', 'Default Target Language', handleSettingChange)}
+        {renderLanguageSetting(settings, 'default_src_lang', 'Default Source Language', handleSettingChange)}
+        {renderLanguageSetting(settings, 'default_dst_lang', 'Default Target Language', handleSettingChange)}
         {renderSettingInput(settings, 'default_provider', 'Default Provider', handleSettingChange)}
         {renderSettingInput(settings, 'default_model', 'Default Model', handleSettingChange)}
         {renderSettingInput(settings, 'default_batch_size', 'Default Batch Size', handleSettingChange, 'number')}
@@ -554,6 +556,9 @@ export default function Settings() {
         )}
       </div>
 
+      {/* Provider Models */}
+      <ProviderModelsSection />
+
       {/* Translation Profiles */}
       <div className="card">
         <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -692,6 +697,29 @@ export default function Settings() {
 function getStr(set: Record<string, unknown>, key: string, fallback = ''): string {
   const val = set[key];
   return typeof val === 'string' ? val : fallback;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helper: render language setting dropdown                           */
+/* ------------------------------------------------------------------ */
+function renderLanguageSetting(
+  settings: Record<string, unknown>,
+  key: string,
+  label: string,
+  onChange: (key: string, value: unknown) => void,
+) {
+  const val = settings[key] != null ? String(settings[key]) : '';
+  return (
+    <div className="form-group" key={key}>
+      <label>{label}</label>
+      <LanguageDropdown
+        value={val}
+        onChange={v => onChange(key, v)}
+        placeholder={label}
+        allowCustom
+      />
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */

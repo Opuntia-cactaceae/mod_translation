@@ -46,10 +46,25 @@ class TaskPlanner:
         config: TranslationConfig,
         file_service: Optional[FileProcessingService] = None,
         cache: Optional[TranslationCache] = None,
+        protection_fingerprint: Optional[str] = None,
     ):
+        """Task planner for building ``TaskPlan`` from file paths.
+
+        Args:
+            config: Translation configuration.
+            file_service: File processing service for parsing.
+            cache: Translation cache for dedup.
+            protection_fingerprint:
+                Optional override for the cache strategy key.  When
+                provided, it replaces the default
+                ``",".join(rule_set_ids)`` strategy.  This is needed
+                because custom protection rules are not tracked in the
+                config but affect effective protection behaviour.
+        """
         self.config = config
         self.file_service = file_service or FileProcessingService()
         self.cache = cache
+        self._protection_fingerprint = protection_fingerprint
 
     # ------------------------------------------------------------------
     # Public API
@@ -242,8 +257,14 @@ class TaskPlanner:
         cached: List[TranslationUnit] = []
         misses: List[TranslationUnit] = []
 
+        # Use protection fingerprint if provided, else fall back to
+        # rule_set_ids-based strategy for backward compatibility.
+        if self._protection_fingerprint is not None:
+            strategy = self._protection_fingerprint
+        else:
+            strategy = ",".join(self.config.protection.rule_set_ids) if self.config.protection.rule_set_ids else ""
+
         for unit in units:
-            strategy = self.config.protection.strategy or ""
             result = self.cache.lookup(
                 unit.source,
                 unit.src_lang or self.config.src_lang,

@@ -85,6 +85,7 @@ function isEqual(a: ProfileFormModel, b: ProfileFormModel): boolean {
     a.singleUserTemplate === b.singleUserTemplate &&
     a.logPrompts === b.logPrompts &&
     a.protectionStrategy === b.protectionStrategy &&
+    JSON.stringify(a.ruleSetIds) === JSON.stringify(b.ruleSetIds) &&
     a.validatorName === b.validatorName &&
     a.outputDir === b.outputDir &&
     a.outputRootDir === b.outputRootDir &&

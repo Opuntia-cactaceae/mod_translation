@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError, useToast } from '../../App';
 import { mapSettingsResponse } from '../../domain/settings';
@@ -11,26 +11,24 @@ import {
   displayNameForLanguage,
   getLanguageBadge,
   normaliseLocalisationLanguage,
-  detectLocalisationLanguage,
 } from '../../utils/localisationLanguage';
 import { usePersistentState } from '../../hooks/usePersistentState';
 import { STORAGE_KEYS } from '../../utils/storageKeys';
 import { useDraftJobSelectionApi } from '../../hooks/useDraftJobSelectionApi';
-import { TranslationPreviewModal } from './TranslationPreviewModal';
-import { useDragSafeClose } from '../../hooks/useDragSafeClose';
+import { useTranslateDiscoveryFiles } from '../../hooks/useTranslateDiscoveryFiles';
 import {
-  getModKey,
+  getModStableKey,
   canTranslateMod,
   getInstallButtonLabel,
   getLocalisationPaths,
+  getLocalisationCountForLanguage,
   hasInstallConflict,
+  isSelfInstalled,
   getDescriptorPath,
   getInstalledPath,
   getModStatusLabel,
   getSupportedVersion,
-  mapTranslationPreview,
   type ModModel,
-  type TranslationPreviewModel,
 } from '../../domain';
 
 /* ------------------------------------------------------------------ */
@@ -50,19 +48,6 @@ function getCommonParentDir(paths: string[]): string | null {
     }
   }
   return prefix;
-}
-
-/**
- * Determine the default source language for a mod.
- * Prefers "en" if English files exist, otherwise returns the
- * first language in sorted order.
- */
-function getDefaultLangForMod(localisationPaths: string[]): string {
-  const grouped = groupFilesByLanguage(localisationPaths);
-  const langs = Object.keys(grouped).filter(l => l !== 'unknown').sort();
-  if (langs.length === 0) return 'en';
-  if (langs.includes('en')) return 'en';
-  return langs[0];
 }
 
 /* ------------------------------------------------------------------ */
@@ -97,44 +82,54 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
   // Visible file count per group for Load more
   const [visibleFilesByGroup, setVisibleFilesByGroup] = useState<Record<string, number>>({});
 
-  // Selected source language per mod (persistent)
-  const [selectedLanguageByMod, setSelectedLanguageByMod] = usePersistentState<Record<string, string>>(
-    STORAGE_KEYS.selectedLanguageByMod,
-    {},
+  // ── Global source language filter ──────────────────────────────────
+  // Single language selection applied to ALL mods, persisted.
+  const [selectedSourceLanguage, setSelectedSourceLanguage] = usePersistentState<string>(
+    STORAGE_KEYS.selectedSourceLanguage,
+    'en',
   );
 
-  // Toggle: show only selected language files, or all localisation files
+  // Global toggle: when true, only files matching selectedSourceLanguage are shown.
   const [showOnlySelected, setShowOnlySelected] = usePersistentState<boolean>(
     STORAGE_KEYS.showOnlySelectedLanguage,
     true,
   );
 
-  // Advanced action confirmation state
-  const [advancedConfirmAction, setAdvancedConfirmAction] = useState<{
-    type: 'add_all_visible' | 'translate_all_visible';
-    mod: ModModel;
-    visibleFiles: string[];
-    languages: string[];
-  } | null>(null);
-  const advancedConfirmClose = useDragSafeClose(
-    useCallback(() => setAdvancedConfirmAction(null), []),
-  );
+  // Compute all languages present across ALL mods (for the global dropdown)
+  const allAvailableLangs = useMemo(() => {
+    const langSet = new Set<string>();
+    for (const mod of mods) {
+      const groups = groupFilesByLanguage(getLocalisationPaths(mod));
+      for (const lang of Object.keys(groups)) {
+        if (lang !== 'unknown') langSet.add(lang);
+      }
+    }
+    return Array.from(langSet).sort();
+  }, [mods]);
 
-  // Translation preview state
-  const [previewState, setPreviewState] = useState<{
-    show: boolean;
-    name: string;
-    filePaths: string[];
-    config: Record<string, unknown>;
-  }>({ show: false, name: '', filePaths: [], config: {} });
-  const [previewData, setPreviewData] = useState<TranslationPreviewModel | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [confirmLoading, setConfirmLoading] = useState(false);
+  // Resolve the effective language: ensure it exists in the available set.
+  const effectiveSelectedLang = useMemo(() => {
+    if (allAvailableLangs.length === 0) return 'en';
+    if (allAvailableLangs.includes(selectedSourceLanguage)) return selectedSourceLanguage;
+    if (allAvailableLangs.includes('en')) return 'en';
+    return allAvailableLangs[0];
+  }, [allAvailableLangs, selectedSourceLanguage]);
+
+  // ── Advanced action confirmation state for mixed-language bulk ops ──
+  const [mixedLangConfirm, setMixedLangConfirm] = useState<{
+    type: 'add_all' | 'translate_all';
+    visibleFiles: string[];
+    modName: string;
+    modKey: string;
+    mixedLanguages: string[];
+  } | null>(null);
 
   // Draft job file selection (Part 2: Add to job UX)
   const draftApi = useDraftJobSelectionApi();
   const { draftFiles, addFile: draftAddFile, addFiles: draftAddFiles, removeFile: draftRemoveFile, isFileAdded } = draftApi;
+
+  // Unified translate flow
+  const { translateAll } = useTranslateDiscoveryFiles();
 
   // Descriptor
   const [descriptorPath, setDescriptorPath] = useState('');
@@ -147,12 +142,44 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
   const [installTargetDirty, setInstallTargetDirty] = useState(false);
   const [installTargetDefault, setInstallTargetDefault] = useState<string | null>(null);
   const [installResult, setInstallResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [installing, setInstalling] = useState(false);
+  const [installingModKey, setInstallingModKey] = useState<string | null>(null);
 
   // Stellaris cache
   const [cachePreview, setCachePreview] = useState<{ items_to_delete: any[]; total_size_bytes: number } | null>(null);
   const [cacheCleaning, setCacheCleaning] = useState(false);
   const [cacheResult, setCacheResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Prune stale entries from expandedMods when mods change (re-scan, initial load).
+  // Removes entries whose mod keys are no longer in the current mods list,
+  // preventing stale state from a previous session from keeping mods expanded.
+  useEffect(() => {
+    if (mods.length === 0) return;
+    const currentKeys = new Set(mods.map(getModStableKey));
+    setExpandedMods(prev => {
+      const staleKey = Object.keys(prev).find(k => !currentKeys.has(k));
+      if (!staleKey) return prev;
+      const pruned: Record<string, boolean> = {};
+      for (const k of Object.keys(prev)) {
+        if (currentKeys.has(k)) pruned[k] = prev[k];
+      }
+      return pruned;
+    });
+    // Also prune expandedGroups for removed mods.
+    setExpandedGroups(prev => {
+      const staleKey = Object.keys(prev).find(k => {
+        // Group keys are "${modKey}::${group.id}"
+        const modPart = k.split('::')[0];
+        return !currentKeys.has(modPart);
+      });
+      if (!staleKey) return prev;
+      const pruned: Record<string, boolean> = {};
+      for (const k of Object.keys(prev)) {
+        const modPart = k.split('::')[0];
+        if (currentKeys.has(modPart)) pruned[k] = prev[k];
+      }
+      return pruned;
+    });
+  }, [mods, setExpandedMods, setExpandedGroups]);
 
   // Load settings on mount for install target default
   useEffect(() => {
@@ -174,6 +201,27 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* ---- Helpers: visible localisation files for a mod ---- */
+
+  /** Return the filtered localisation files for a mod based on global filter state. */
+  function getVisibleFiles(mod: ModModel): string[] {
+    const locFiles = getLocalisationPaths(mod);
+    if (!showOnlySelected) return locFiles;
+    return filterFilesByLanguage(locFiles, effectiveSelectedLang);
+  }
+
+  /** Detect languages present in a list of file paths. */
+  function detectLanguagesInFiles(filePaths: string[]): string[] {
+    const langs = new Set<string>();
+    for (const p of filePaths) {
+      const norm = normaliseLocalisationLanguage(
+        p.match(/l_(\w+)\.yml$/) ? p.match(/l_(\w+)\.yml$/)![1] : null,
+      );
+      if (norm) langs.add(norm);
+    }
+    return Array.from(langs).sort();
+  }
+
   /* ---- Handlers ---- */
 
   async function handleReadDescriptor(path: string) {
@@ -183,6 +231,7 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
     try {
       const res = await api.readDescriptor({ path });
       setDescriptorText(res.descriptor_text);
+      toast.showToast('Descriptor loaded', 'success');
     } catch (err) {
       if (err instanceof ApiError) toast.showToast(err.message, 'error');
       else toast.showToast('Failed to read descriptor', 'error');
@@ -191,12 +240,12 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
     }
   }
 
-  async function handleInstall(sourcePath: string, action: string) {
+  async function handleInstall(sourcePath: string, action: string, modKey: string) {
     if (!installTarget.trim()) {
       toast.showToast('Enter target directory', 'error');
       return;
     }
-    setInstalling(true);
+    setInstallingModKey(modKey);
     setInstallResult(null);
     try {
       const opts: { source_path: string; target_dir: string; overwrite?: boolean; backup_on_overwrite?: boolean } = {
@@ -221,7 +270,7 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
       if (err instanceof ApiError) setInstallResult({ success: false, message: err.message });
       else setInstallResult({ success: false, message: 'Install error' });
     } finally {
-      setInstalling(false);
+      setInstallingModKey(null);
     }
   }
 
@@ -237,175 +286,118 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
     }
   }
 
-  /* ---- Preview & Translate flow ---- */
+  /* ---- Mod-level bulk actions ---- */
 
-  async function openTranslatePreview(filePaths: string[], name: string) {
-    if (filePaths.length === 0) {
-      toast.showToast('No localisation files to translate', 'error');
-      return;
-    }
-    setPreviewState({ show: true, name, filePaths, config: {} });
-    setPreviewData(null);
-    setPreviewError(null);
-    setPreviewLoading(true);
+  /** Add all visible (filtered) localisation files for a mod to the job draft. */
+  function handleAddAllToJob(mod: ModModel) {
+    const paths = getVisibleFiles(mod);
+    if (paths.length === 0) return;
 
-    try {
-      const settingsRes = await api.getSettings();
-      const model = mapSettingsResponse(settingsRes.settings);
-      const lang = model.language;
-      const runtime = model.runtime_defaults;
-      const trans = model.translation_defaults;
-
-      let srcLang = lang?.default_src_lang || 'en';
-      const langMatch = filePaths[0]?.match(/l_(\w+)\.yml$/);
-      if (langMatch) {
-        const langMap: Record<string, string> = {
-          english: 'en', french: 'fr', german: 'de', russian: 'ru',
-          spanish: 'es', polish: 'pl', japanese: 'ja', korean: 'ko',
-          simp_chinese: 'zh', brazilian: 'pt-BR', portuguese: 'pt',
-          italian: 'it', dutch: 'nl', swedish: 'sv', czech: 'cs',
-          hungarian: 'hu', turkish: 'tr', arabic: 'ar',
-        };
-        const detected = langMap[langMatch[1]];
-        if (detected) srcLang = detected;
+    // Show mixed-language warning when filter is OFF and mod has multiple languages
+    if (!showOnlySelected) {
+      const languages = detectLanguagesInFiles(paths);
+      if (languages.length > 1) {
+        setMixedLangConfirm({
+          type: 'add_all',
+          visibleFiles: paths,
+          modName: mod.name,
+          modKey: getModStableKey(mod),
+          mixedLanguages: languages,
+        });
+        return;
       }
-
-      const config: Record<string, unknown> = {
-        src_lang: srcLang,
-        dst_lang: lang?.default_dst_lang || 'ru',
-        provider: runtime?.default_provider || '',
-        model: runtime?.default_model || '',
-        batch_size: trans?.default_batch_size ?? 10,
-        use_cache: trans?.default_use_cache ?? true,
-      };
-
-      setPreviewState(prev => ({ ...prev, config }));
-
-      const res = await api.previewTranslationPlan({
-        file_paths: filePaths,
-        config,
-      });
-      setPreviewData(mapTranslationPreview(res));
-    } catch (err) {
-      if (err instanceof ApiError) setPreviewError(err.message);
-      else setPreviewError('Preview failed');
-    } finally {
-      setPreviewLoading(false);
     }
+
+    performAddAll(paths, mod);
   }
 
-  async function confirmTranslatePreview() {
-    if (!previewState.filePaths.length) return;
-    setConfirmLoading(true);
-    try {
-      const newJob = await api.createJob({
-        file_paths: previewState.filePaths,
-        name: previewState.name,
-        config: previewState.config,
-      });
-
-      await api.startJob(newJob.id);
-
-      toast.showToast(`Translation job created and started: "${previewState.name}"`);
-      setPreviewState({ show: false, name: '', filePaths: [], config: {} });
-      navigate('/jobs', { state: { selectedJobId: newJob.id } });
-    } catch (err) {
-      if (err instanceof ApiError) toast.showToast(err.message, 'error');
-      else toast.showToast('Failed to create translation job', 'error');
-    } finally {
-      setConfirmLoading(false);
-    }
-  }
-
-  function closePreview() {
-    if (confirmLoading) return;
-    setPreviewState({ show: false, name: '', filePaths: [], config: {} });
-    setPreviewData(null);
-    setPreviewError(null);
-    setPreviewLoading(false);
-  }
-
-  async function handleTranslateMod(mod: ModModel) {
-    const key = getModKey(mod);
-    const selectedLang = selectedLanguageByMod[key] || getDefaultLangForMod(getLocalisationPaths(mod));
-    const files = filterFilesByLanguage(getLocalisationPaths(mod), selectedLang);
-    await openTranslatePreview(files, `Translate: ${mod.name}`);
-  }
-
-  function handleAddAllVisibleToJob(mod: ModModel, allFiles: string[], languages: string[]) {
-    const hasMixed = languages.length > 1;
-    if (hasMixed) {
-      setAdvancedConfirmAction({ type: 'add_all_visible', mod, visibleFiles: allFiles, languages });
+  function performAddAll(paths: string[], mod: ModModel) {
+    const newPaths = paths.filter(p => !isFileAdded(p));
+    if (newPaths.length === 0) {
+      toast.showToast('All files already added to job draft', 'info');
       return;
     }
-    performAddAllVisible(allFiles, mod);
+    draftAddFiles(newPaths, { modId: getModStableKey(mod), modName: mod.name });
+    toast.showToast(`${newPaths.length} file(s) added to job draft`, 'info');
   }
 
-  function performAddAllVisible(allFiles: string[], mod: ModModel) {
-    draftAddFiles(allFiles, { modId: mod.id, modName: mod.name });
-    toast(`${allFiles.length} file(s) added to job draft`, 'info');
+  /** Perform unified translate via the shared hook (with duplicate detection). */
+  function performTranslateAll(paths: string[], mod: ModModel) {
+    translateAll(
+      { files: paths, gameId: getModStableKey(mod), gameLabel: mod.name },
+      true,
+    );
   }
 
-  async function handleTranslateAllVisible(mod: ModModel, allFiles: string[], languages: string[]) {
-    const hasMixed = languages.length > 1;
-    if (hasMixed) {
-      setAdvancedConfirmAction({ type: 'translate_all_visible', mod, visibleFiles: allFiles, languages });
+  /** Translate all visible (filtered) localisation files for a mod:
+   *  adds them to the draft and navigates to the Create Job form
+   *  via the unified translate flow (with duplicate detection). */
+  function handleTranslateMod(mod: ModModel) {
+    const paths = getVisibleFiles(mod);
+    if (paths.length === 0) return;
+
+    // Show mixed-language warning when filter is OFF and mod has multiple languages
+    if (!showOnlySelected) {
+      const languages = detectLanguagesInFiles(paths);
+      if (languages.length > 1) {
+        setMixedLangConfirm({
+          type: 'translate_all',
+          visibleFiles: paths,
+          modName: mod.name,
+          modKey: getModStableKey(mod),
+          mixedLanguages: languages,
+        });
+        return;
+      }
+    }
+
+    // Use unified translate flow
+    performTranslateAll(paths, mod);
+  }
+
+  function handleMixedLangConfirm() {
+    if (!mixedLangConfirm) return;
+    const { type, visibleFiles, modName, modKey } = mixedLangConfirm;
+    setMixedLangConfirm(null);
+
+    // For translate type, use the unified translate flow (add to draft, duplicate detection, navigate)
+    if (type === 'translate_all') {
+      translateAll({ files: visibleFiles, gameId: modKey, gameLabel: modName }, true);
       return;
     }
-    await performTranslateAllVisible(allFiles, mod);
-  }
 
-  async function performTranslateAllVisible(allFiles: string[], mod: ModModel) {
-    await openTranslatePreview(allFiles, `Translate: ${mod.name}`);
-  }
-
-  function handleAdvancedConfirm() {
-    if (!advancedConfirmAction) return;
-    const { type, mod, visibleFiles } = advancedConfirmAction;
-    setAdvancedConfirmAction(null);
-    if (type === 'add_all_visible') {
-      performAddAllVisible(visibleFiles, mod);
-    } else {
-      performTranslateAllVisible(visibleFiles, mod);
+    // For 'add_all' type, use inline draft logic
+    const newPaths = visibleFiles.filter(p => !isFileAdded(p));
+    if (newPaths.length === 0) {
+      toast.showToast('All files already added to job draft', 'info');
+      return;
     }
+    draftAddFiles(newPaths, { modId: modKey, modName });
+    toast.showToast(`${newPaths.length} file(s) added to job draft`, 'info');
   }
+
+  /* ---- File / group level actions ---- */
 
   function handleAddLocalisationToJob(mod: ModModel, filePath: string) {
     if (isFileAdded(filePath)) {
       draftRemoveFile(filePath);
     } else {
-      draftAddFile(filePath, { modId: mod.id, modName: mod.name });
+      draftAddFile(filePath, { modId: getModStableKey(mod), modName: mod.name });
     }
   }
 
-  function handleAddAllToJob(mod: ModModel) {
-    const key = getModKey(mod);
-    const selectedLang = selectedLanguageByMod[key] || getDefaultLangForMod(getLocalisationPaths(mod));
-    const paths = filterFilesByLanguage(getLocalisationPaths(mod), selectedLang);
-    if (paths.length === 0) return;
-    const newPaths = paths.filter(p => !isFileAdded(p));
-    if (newPaths.length === 0) {
-      toast('All files already added to job draft', 'info');
-      return;
-    }
-    draftAddFiles(newPaths, { modId: mod.id, modName: mod.name });
-    toast(`${newPaths.length} file(s) added to job draft`, 'info');
-  }
-
-  function addFilesToJob(filePaths: string[], modName: string, modId: string, gameConfig?: Record<string, unknown>) {
+  function addFilesToJob(filePaths: string[], modName: string, modKey: string, gameConfig?: Record<string, unknown>) {
     const newPaths = filePaths.filter(p => !isFileAdded(p));
     if (newPaths.length === 0) {
-      toast('All files already added to job draft', 'info');
+      toast.showToast('All files already added to job draft', 'info');
       return;
     }
-    draftAddFiles(newPaths, { modId: modId, modName: modName });
-    toast(`${newPaths.length} file(s) added to job draft`, 'info');
+    draftAddFiles(newPaths, { modId: modKey, modName: modName });
+    toast.showToast(`${newPaths.length} file(s) added to job draft`, 'info');
   }
 
   async function handleOpenLocalisationFolder(mod: ModModel) {
-    const key = getModKey(mod);
-    const selectedLang = selectedLanguageByMod[key] || getDefaultLangForMod(getLocalisationPaths(mod));
-    const paths = filterFilesByLanguage(getLocalisationPaths(mod), selectedLang);
+    const paths = getVisibleFiles(mod);
     if (paths.length === 0) return;
     const commonDir = getCommonParentDir(paths);
     if (commonDir) {
@@ -419,14 +411,13 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
   }
 
   function handleAddGroupToJob(mod: ModModel, group: LocalisationGroup) {
-    const key = getModKey(mod);
-    const selectedLang = selectedLanguageByMod[key] || getDefaultLangForMod(getLocalisationPaths(mod));
-    addFilesToJob(group.files, `${mod.name} / ${group.label}`, mod.id, { src_lang: selectedLang });
+    addFilesToJob(group.files, `${mod.name} / ${group.label}`, getModStableKey(mod), { src_lang: effectiveSelectedLang });
   }
 
+  /** Translate a localisation group: uses the unified translate flow
+   *  (adds to draft, duplicate detection, navigates to /jobs). */
   function handleTranslateGroup(mod: ModModel, group: LocalisationGroup) {
-    const jobName = `Translate: ${mod.name} / ${group.label}`;
-    openTranslatePreview(group.files, jobName);
+    performTranslateAll(group.files, mod);
   }
 
   async function handleOpenGroupFolder(group: LocalisationGroup) {
@@ -483,14 +474,86 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
       {/* Mods list */}
       <div className="card">
         <div className="card-title">Discovered Mods ({mods.length})</div>
+
+        {/* ── Global source language filter bar ──────────────────── */}
+        {allAvailableLangs.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              flexWrap: 'wrap',
+              marginBottom: '0.75rem',
+            }}
+          >
+            <span
+              style={{
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              Source language:
+            </span>
+            <select
+              className="form-control"
+              value={effectiveSelectedLang}
+              onChange={(e) => setSelectedSourceLanguage(e.target.value)}
+              style={{
+                width: 'auto',
+                minWidth: '110px',
+                fontSize: '0.8rem',
+                padding: '0.3rem 0.5rem',
+              }}
+            >
+              {allAvailableLangs.map(lang => (
+                <option key={lang} value={lang}>
+                  {displayNameForLanguage(lang)}
+                </option>
+              ))}
+            </select>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                cursor: 'pointer',
+                userSelect: 'none',
+                fontSize: '0.8rem',
+                color: 'var(--color-text)',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={showOnlySelected}
+                onChange={(e) => setShowOnlySelected(e.target.checked)}
+                style={{ accentColor: 'var(--color-primary)', margin: 0 }}
+              />
+              Show only selected source language files
+            </label>
+          </div>
+        )}
+
         {mods.map((mod) => {
-          const key = getModKey(mod);
+          const key = getModStableKey(mod);
           const isExpanded = !!expandedMods[key];
           const locFiles = getLocalisationPaths(mod);
           const modTags = mod.tags;
 
+          // Visible files after applying the global filter
+          const visibleLocalisationFiles = getVisibleFiles(mod);
+
+          // Whether any localisation file in this mod is already in the job draft
+          const modHasAdded = locFiles.some(f => isFileAdded(f));
+
+          // Count of files matching the selected language (or total if filter is off)
+          const selectedLangCount = showOnlySelected
+            ? getLocalisationCountForLanguage(mod, effectiveSelectedLang)
+            : locFiles.length;
+
           return (
-            <div key={key} className="mod-item">
+            <div key={key} className={`mod-item${modHasAdded ? ' mod-item-has-added' : ''}`}>
               {/* Compact header — always visible */}
               <div
                 className="mod-item-header"
@@ -508,10 +571,17 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
                       {mod.installed ? 'INSTALLED' : 'NOT INSTALLED'}
                     </span>
                     {locFiles.length > 0 && (
-                      <span className="badge badge-success">Has localisation ({locFiles.length})</span>
+                      <span className={`badge ${selectedLangCount > 0 ? 'badge-success' : 'badge-warning'}`}>
+                        {showOnlySelected
+                          ? `Has localisation (${selectedLangCount} / ${locFiles.length})`
+                          : `Has localisation (${locFiles.length})`}
+                      </span>
                     )}
                     {hasInstallConflict(mod) && (
                       <span className="badge badge-error">Descriptor mismatch</span>
+                    )}
+                    {isSelfInstalled(mod) && (
+                      <span className="badge badge-warning">Self-hosted</span>
                     )}
                   </div>
                 </div>
@@ -520,12 +590,17 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
                     Read Descriptor
                   </button>
                   {mod.installed ? (
-                    <button className="btn btn-sm btn-primary" onClick={() => handleInstall(mod.path, mod.installAction)} disabled={installing}>
-                      {installing ? 'Installing...' : getInstallButtonLabel(mod)}
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => handleInstall(mod.path, mod.installAction, key)}
+                      disabled={installingModKey === key || isSelfInstalled(mod)}
+                      title={isSelfInstalled(mod) ? 'Source and installed folder are the same; reinstall not needed' : ''}
+                    >
+                      {installingModKey === key ? 'Installing...' : getInstallButtonLabel(mod)}
                     </button>
                   ) : (
-                    <button className="btn btn-sm btn-primary" onClick={() => handleInstall(mod.path, 'install')} disabled={installing}>
-                      {installing ? 'Installing...' : getInstallButtonLabel(mod)}
+                    <button className="btn btn-sm btn-primary" onClick={() => handleInstall(mod.path, 'install', key)} disabled={installingModKey === key}>
+                      {installingModKey === key ? 'Installing...' : getInstallButtonLabel(mod)}
                     </button>
                   )}
                   {mod.installed && getInstalledPath(mod) && (
@@ -536,7 +611,7 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
                   <button className="btn btn-sm" onClick={() => handleRevealPath(mod.path)}>
                     Open source folder
                   </button>
-                  {canTranslateMod(mod) && (
+                  {canTranslateMod(mod) && (!showOnlySelected || selectedLangCount > 0) && (
                     <button
                       className="btn btn-sm btn-primary"
                       onClick={() => handleTranslateMod(mod)}
@@ -625,335 +700,224 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
                     </div>
                   )}
 
+                  {/* ── Localisation section ───────────────────────── */}
                   {locFiles.length > 0 && (
                     <div className="mod-detail-section">
-                      {(() => {
-                        const languageGroups = groupFilesByLanguage(locFiles);
-                        const availableLangs = Object.keys(languageGroups).filter(l => l !== 'unknown').sort();
-                        const hasMultipleLanguages = availableLangs.length > 1;
-                        const selectedLang = selectedLanguageByMod[key] || getDefaultLangForMod(locFiles);
-                        const selectedLanguageFiles = hasMultipleLanguages
-                          ? filterFilesByLanguage(locFiles, selectedLang)
-                          : locFiles;
+                      {/* Localisation header + bulk actions */}
+                      <div className="mod-localisation-header">
+                        <span className="mod-detail-label" style={{ margin: 0 }}>
+                          Localisation files
+                          {showOnlySelected && !(visibleLocalisationFiles.length === 0 && locFiles.length > 0)
+                            ? ` (${displayNameForLanguage(effectiveSelectedLang)}, ${visibleLocalisationFiles.length})`
+                            : ` (${visibleLocalisationFiles.length})`}
+                        </span>
+                        <div className="mod-bulk-actions">
+                          {(() => {
+                            const allVisibleAdded = visibleLocalisationFiles.length > 0 && visibleLocalisationFiles.every(f => isFileAdded(f));
+                            return (
+                              <button
+                                className={`btn btn-sm${allVisibleAdded ? ' btn-added' : ''}`}
+                                style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                onClick={() => handleAddAllToJob(mod)}
+                                disabled={visibleLocalisationFiles.length === 0}
+                              >
+                                {allVisibleAdded ? 'All added' : 'Add all to Translation Job'}
+                              </button>
+                            );
+                          })()}
+                          <button
+                            className="btn btn-sm"
+                            style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                            onClick={() => handleTranslateMod(mod)}
+                            disabled={visibleLocalisationFiles.length === 0}
+                          >
+                            Translate all localisation
+                          </button>
+                          <button
+                            className="btn btn-sm"
+                            style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                            onClick={() => handleOpenLocalisationFolder(mod)}
+                            disabled={visibleLocalisationFiles.length === 0}
+                          >
+                            Open localisation folder
+                          </button>
+                        </div>
+                      </div>
 
-                        const isAdvanced = !showOnlySelected && hasMultipleLanguages;
-                        const visibleFiles = isAdvanced ? locFiles : selectedLanguageFiles;
+                      {/* Empty state when filter excludes all files */}
+                      {showOnlySelected && visibleLocalisationFiles.length === 0 && locFiles.length > 0 && (
+                        <div style={{ fontSize: '0.75rem', padding: '0.5rem 0', color: 'var(--color-text-muted)' }}>
+                          No localisation files found for {displayNameForLanguage(effectiveSelectedLang)}.
+                        </div>
+                      )}
 
-                        // Compute unique languages in visible files (for advanced mode badge)
-                        const visibleLangs = (() => {
-                          if (!isAdvanced) return [] as string[];
-                          const langs = new Set<string>();
-                          for (const p of visibleFiles) {
-                            const raw = detectLocalisationLanguage(p);
-                            const norm = normaliseLocalisationLanguage(raw);
-                            if (norm) langs.add(norm);
-                          }
-                          return Array.from(langs).sort();
-                        })();
-
+                      {/* Groups */}
+                      {visibleLocalisationFiles.length > 0 && (() => {
+                        const groups = groupLocalisationFiles(visibleLocalisationFiles);
                         return (
-                          <>
-                            {/* Toggle + Language selector */}
-                            <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                              {/* Advanced mode toggle */}
-                              {hasMultipleLanguages && (
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer', userSelect: 'none' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={showOnlySelected}
-                                    onChange={(e) => setShowOnlySelected(e.target.checked)}
-                                  />
-                                  <span style={{ fontWeight: 500 }}>Show only selected source language files</span>
-                                </label>
-                              )}
+                          <div className="loc-groups-container">
+                            {groups.map((group, gi) => {
+                              const groupKey = `${key}::${group.id}`;
+                              const isGroupExpanded = !!expandedGroups[groupKey];
+                              const visibleCount = visibleFilesByGroup[groupKey] || 10;
+                              const groupFilesToShow = group.files.slice(0, visibleCount);
+                              const hasMore = group.files.length > visibleCount;
+                              const hasMixedLanguages = group.languages.length > 1;
+                              const hasGroupAdded = group.files.some(f => isFileAdded(f));
 
-                              {/* Language selector (always visible when multiple langs, even in advanced mode) */}
-                              {hasMultipleLanguages && (
-                                <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                                  <label style={{ fontWeight: 600 }}>Source:</label>
-                                  <select
-                                    value={selectedLang}
-                                    onChange={(e) =>
-                                      setSelectedLanguageByMod(prev => ({
+                              return (
+                                <div key={gi} className={`loc-group-item${hasGroupAdded ? ' loc-group-has-added' : ''}`}>
+                                  <div
+                                    className="loc-group-header"
+                                    onClick={() =>
+                                      setExpandedGroups(prev => ({
                                         ...prev,
-                                        [key]: e.target.value,
+                                        [groupKey]: !prev[groupKey],
                                       }))
                                     }
-                                    style={{
-                                      fontSize: '0.7rem',
-                                      padding: '0.15rem 0.3rem',
-                                      maxWidth: '200px',
-                                    }}
                                   >
-                                    {availableLangs.map(lang => (
-                                      <option key={lang} value={lang}>
-                                        {displayNameForLanguage(lang)} ({languageGroups[lang].length})
-                                      </option>
-                                    ))}
-                                  </select>
-                                </span>
-                              )}
-                            </div>
+                                    <span className={`loc-group-arrow${isGroupExpanded ? ' open' : ''}`}>
+                                      &#9654;
+                                    </span>
+                                    <span className="loc-group-label">{group.label}</span>
+                                    <span className="badge badge-muted" style={{ fontSize: '0.6rem' }}>
+                                      {group.files.length} {group.files.length === 1 ? 'file' : 'files'}
+                                    </span>
+                                    {group.languages.map(raw => {
+                                      const norm = normaliseLocalisationLanguage(raw);
+                                      return norm ? (
+                                        <span key={raw} className="badge badge-info" style={{ fontSize: '0.6rem' }}>
+                                          {getLanguageBadge(norm)}
+                                        </span>
+                                      ) : null;
+                                    })}
+                                    {!showOnlySelected && hasMixedLanguages && (
+                                      <span className="badge badge-warning" style={{ fontSize: '0.6rem' }}>
+                                        mixed languages
+                                      </span>
+                                    )}
+                                  </div>
 
-                            {/* Advanced mode info block */}
-                            {isAdvanced && (
-                              <div
-                                className="alert alert-info"
-                                style={{ marginBottom: '0.4rem', padding: '0.3rem 0.5rem', fontSize: '0.65rem' }}
-                              >
-                                Advanced mode enabled. Multiple localisation languages are visible.
-                                <span style={{ marginLeft: '0.3rem', opacity: 0.7 }}>
-                                  ({visibleLangs.map(l => displayNameForLanguage(l)).join(', ')})
-                                </span>
-                              </div>
-                            )}
-
-                            <div className="mod-localisation-header">
-                              <span className="mod-detail-label" style={{ margin: 0 }}>
-                                Localisation files
-                                {isAdvanced
-                                  ? ` (${visibleFiles.length})`
-                                  : hasMultipleLanguages
-                                    ? ` (${displayNameForLanguage(selectedLang)}, ${visibleFiles.length})`
-                                    : ` (${visibleFiles.length})`}
-                              </span>
-                              <div className="mod-bulk-actions">
-                                {(() => {
-                                  const allSelectedAdded = selectedLanguageFiles.length > 0 && selectedLanguageFiles.every(f => isFileAdded(f));
-                                  return (
-                                    <button
-                                      className={`btn btn-sm${allSelectedAdded ? ' btn-added' : ''}`}
-                                      style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                      onClick={() => handleAddAllToJob(mod)}
-                                      disabled={selectedLanguageFiles.length === 0}
-                                    >
-                                      {allSelectedAdded ? 'All added' : 'Add all to Translation Job'}
-                                    </button>
-                                  );
-                                })()}
-                                <button
-                                  className="btn btn-sm"
-                                  style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                  onClick={() => handleTranslateMod(mod)}
-                                  disabled={selectedLanguageFiles.length === 0}
-                                >
-                                  Translate all localisation
-                                </button>
-                                {/* Advanced bulk actions: only when toggle OFF and multiple languages */}
-                                {isAdvanced && (
-                                  <>
-                                    <button
-                                      className="btn btn-sm"
-                                      style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                      onClick={() => handleAddAllVisibleToJob(mod, visibleFiles, visibleLangs)}
-                                      disabled={visibleFiles.length === 0}
-                                    >
-                                      Add all visible files
-                                    </button>
-                                    <button
-                                      className="btn btn-sm"
-                                      style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                      onClick={() => handleTranslateAllVisible(mod, visibleFiles, visibleLangs)}
-                                      disabled={visibleFiles.length === 0}
-                                    >
-                                      Translate all visible files
-                                    </button>
-                                  </>
-                                )}
-                                <button
-                                  className="btn btn-sm"
-                                  style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                  onClick={() => handleOpenLocalisationFolder(mod)}
-                                  disabled={selectedLanguageFiles.length === 0}
-                                >
-                                  Open localisation folder
-                                </button>
-                              </div>
-                            </div>
-
-                            {(() => {
-                              const groups = groupLocalisationFiles(visibleFiles);
-                              return (
-                                <div className="loc-groups-container">
-                                  {groups.map((group, gi) => {
-                                    const groupKey = `${key}::${group.id}`;
-                                    const isGroupExpanded = !!expandedGroups[groupKey];
-                                    const visibleCount = visibleFilesByGroup[groupKey] || 10;
-                                    const groupFilesToShow = group.files.slice(0, visibleCount);
-                                    const hasMore = group.files.length > visibleCount;
-                                    const hasMixedLanguages = group.languages.length > 1;
-
-                                    return (
-                                      <div key={gi} className="loc-group-item">
-                                        <div
-                                          className="loc-group-header"
-                                          onClick={() =>
-                                            setExpandedGroups(prev => ({
-                                              ...prev,
-                                              [groupKey]: !prev[groupKey],
-                                            }))
-                                          }
+                                  <div className="loc-group-actions">
+                                    {(() => {
+                                      const allGroupAdded = group.files.every(f => isFileAdded(f));
+                                      return (
+                                        <button
+                                          className={`btn btn-sm${allGroupAdded ? ' btn-added' : ''}`}
+                                          style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                          onClick={() => handleAddGroupToJob(mod, group)}
                                         >
-                                          <span className={`loc-group-arrow${isGroupExpanded ? ' open' : ''}`}>
-                                            &#9654;
-                                          </span>
-                                          <span className="loc-group-label">{group.label}</span>
-                                          <span className="badge badge-muted" style={{ fontSize: '0.6rem' }}>
-                                            {group.files.length} {group.files.length === 1 ? 'file' : 'files'}
-                                          </span>
-                                          {isAdvanced
-                                            ? /* Advanced mode: normalised short-code badges */
-                                              group.languages.map(raw => {
-                                                const norm = normaliseLocalisationLanguage(raw);
-                                                return norm ? (
-                                                  <span key={raw} className="badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                                    {getLanguageBadge(norm)}
-                                                  </span>
-                                                ) : null;
-                                              })
-                                            : /* Safe mode: raw suffix badges (current behaviour) */
-                                              group.languages.map(lang => (
-                                                <span key={lang} className="badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                                  {lang.toUpperCase()}
-                                                </span>
-                                              ))}
-                                          {isAdvanced && hasMixedLanguages && (
-                                            <span className="badge badge-warning" style={{ fontSize: '0.6rem' }}>
-                                              mixed languages
+                                          {allGroupAdded ? 'All added' : 'Add group to Translation Job'}
+                                        </button>
+                                      );
+                                    })()}
+                                    <button
+                                      className="btn btn-sm"
+                                      style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                      onClick={() => handleTranslateGroup(mod, group)}
+                                    >
+                                      Translate group
+                                    </button>
+                                    <button
+                                      className="btn btn-sm"
+                                      style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                      onClick={() => handleOpenGroupFolder(group)}
+                                    >
+                                      Open group folder
+                                    </button>
+                                  </div>
+
+                                  {isGroupExpanded && (
+                                    <div className="loc-group-body">
+                                      {groupFilesToShow.map((locPath, fi) => {
+                                        const rawLang = detectLanguageFromPath(locPath) || '';
+                                        const normLang = normaliseLocalisationLanguage(rawLang);
+                                        const alreadyAdded = isFileAdded(locPath);
+                                        return (
+                                          <div
+                                            key={fi}
+                                            className={alreadyAdded ? 'loc-file-added' : undefined}
+                                            style={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: '0.4rem',
+                                              fontSize: '0.7rem',
+                                              padding: '0.15rem 0',
+                                              flexWrap: 'wrap',
+                                            }}
+                                          >
+                                            <span
+                                              className="mono"
+                                              style={{
+                                                flex: 1,
+                                                minWidth: 0,
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                              }}
+                                            >
+                                              {locPath.split('/').pop()}
                                             </span>
+                                            {normLang ? (
+                                              <span className="badge badge-info" style={{ fontSize: '0.6rem' }}>
+                                                {getLanguageBadge(normLang)}
+                                              </span>
+                                            ) : null}
+                                            <button
+                                              className={`btn btn-sm${alreadyAdded ? ' btn-added' : ''}`}
+                                              style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                              onClick={() => handleAddLocalisationToJob(mod, locPath)}
+                                            >
+                                              {alreadyAdded ? 'Added' : 'Add to Translation Job'}
+                                            </button>
+                                            <button
+                                              className="btn btn-sm"
+                                              style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                              onClick={() => handleRevealPath(locPath)}
+                                            >
+                                              Open folder
+                                            </button>
+                                          </div>
+                                        );
+                                      })}
+                                      {group.files.length > 10 && (
+                                        <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.25rem' }}>
+                                          {hasMore && (
+                                            <button
+                                              className="btn btn-sm"
+                                              style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                              onClick={() =>
+                                                setVisibleFilesByGroup(prev => ({
+                                                  ...prev,
+                                                  [groupKey]: (prev[groupKey] || 10) + 20,
+                                                }))
+                                              }
+                                            >
+                                              Load 20 more
+                                            </button>
+                                          )}
+                                          {visibleCount > 10 && (
+                                            <button
+                                              className="btn btn-sm"
+                                              style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
+                                              onClick={() =>
+                                                setVisibleFilesByGroup(prev => ({
+                                                  ...prev,
+                                                  [groupKey]: 10,
+                                                }))
+                                              }
+                                            >
+                                              Show less
+                                            </button>
                                           )}
                                         </div>
-
-                                        <div className="loc-group-actions">
-                                          {(() => {
-                                            const allGroupAdded = group.files.every(f => isFileAdded(f));
-                                            return (
-                                              <button
-                                                className={`btn btn-sm${allGroupAdded ? ' btn-added' : ''}`}
-                                                style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                                onClick={() => handleAddGroupToJob(mod, group)}
-                                              >
-                                                {allGroupAdded ? 'All added' : 'Add group to Translation Job'}
-                                              </button>
-                                            );
-                                          })()}
-                                          <button
-                                            className="btn btn-sm"
-                                            style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                            onClick={() => handleTranslateGroup(mod, group)}
-                                          >
-                                            Translate group
-                                          </button>
-                                          <button
-                                            className="btn btn-sm"
-                                            style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                            onClick={() => handleOpenGroupFolder(group)}
-                                          >
-                                            Open group folder
-                                          </button>
-                                        </div>
-
-                                        {isGroupExpanded && (
-                                          <div className="loc-group-body">
-                                            {groupFilesToShow.map((locPath, fi) => {
-                                              const rawLang = detectLanguageFromPath(locPath) || '';
-                                              const normLang = normaliseLocalisationLanguage(rawLang);
-                                              return (
-                                                <div
-                                                  key={fi}
-                                                  style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '0.4rem',
-                                                    fontSize: '0.7rem',
-                                                    padding: '0.15rem 0',
-                                                    flexWrap: 'wrap',
-                                                  }}
-                                                >
-                                                  <span
-                                                    className="mono"
-                                                    style={{
-                                                      flex: 1,
-                                                      minWidth: 0,
-                                                      overflow: 'hidden',
-                                                      textOverflow: 'ellipsis',
-                                                      whiteSpace: 'nowrap',
-                                                    }}
-                                                  >
-                                                    {locPath.split('/').pop()}
-                                                  </span>
-                                                  {isAdvanced && normLang ? (
-                                                    <span className="badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                                      {getLanguageBadge(normLang)}
-                                                    </span>
-                                                  ) : !isAdvanced && rawLang ? (
-                                                    <span className="badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                                      {rawLang}
-                                                    </span>
-                                                  ) : null}
-                                                  {(() => {
-                                                    const alreadyAdded = isFileAdded(locPath);
-                                                    return (
-                                                      <button
-                                                        className={`btn btn-sm${alreadyAdded ? ' btn-added' : ''}`}
-                                                        style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                                        onClick={() => handleAddLocalisationToJob(mod, locPath)}
-                                                      >
-                                                        {alreadyAdded ? 'Added' : 'Add to Translation Job'}
-                                                      </button>
-                                                    );
-                                                  })()}
-                                                  <button
-                                                    className="btn btn-sm"
-                                                    style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                                    onClick={() => handleRevealPath(locPath)}
-                                                  >
-                                                    Open folder
-                                                  </button>
-                                                </div>
-                                              );
-                                            })}
-                                            {group.files.length > 10 && (
-                                              <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.25rem' }}>
-                                                {hasMore && (
-                                                  <button
-                                                    className="btn btn-sm"
-                                                    style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                                    onClick={() =>
-                                                      setVisibleFilesByGroup(prev => ({
-                                                        ...prev,
-                                                        [groupKey]: (prev[groupKey] || 10) + 20,
-                                                      }))
-                                                    }
-                                                  >
-                                                    Load 20 more
-                                                  </button>
-                                                )}
-                                                {visibleCount > 10 && (
-                                                  <button
-                                                    className="btn btn-sm"
-                                                    style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}
-                                                    onClick={() =>
-                                                      setVisibleFilesByGroup(prev => ({
-                                                        ...prev,
-                                                        [groupKey]: 10,
-                                                      }))
-                                                    }
-                                                  >
-                                                    Show less
-                                                  </button>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               );
-                            })()}
-                          </>
+                            })}
+                          </div>
                         );
                       })()}
                     </div>
@@ -1025,9 +989,9 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
         )}
       </div>
 
-      {/* Advanced action confirmation modal */}
-      {advancedConfirmAction && (
-        <div className="modal-overlay" onPointerDown={advancedConfirmClose.handleOverlayPointerDown} onClick={advancedConfirmClose.handleOverlayClick}>
+      {/* Mixed-language confirmation modal */}
+      {mixedLangConfirm && (
+        <div className="modal-overlay" onClick={() => setMixedLangConfirm(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Mixed localisation languages</h3>
@@ -1035,15 +999,15 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
             <div className="modal-body" style={{ fontSize: '0.75rem' }}>
               <p>
                 You are about to use localisation files from multiple source languages
-                ({advancedConfirmAction.languages.map(l => displayNameForLanguage(l)).join(', ')}).
+                ({mixedLangConfirm.mixedLanguages.map(l => displayNameForLanguage(l)).join(', ')}).
                 This may produce mixed-language translation jobs.
               </p>
             </div>
             <div className="modal-footer">
-              <button className="btn" onClick={() => setAdvancedConfirmAction(null)}>
+              <button className="btn" onClick={() => setMixedLangConfirm(null)}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={handleAdvancedConfirm}>
+              <button className="btn btn-primary" onClick={handleMixedLangConfirm}>
                 Continue
               </button>
             </div>
@@ -1051,16 +1015,6 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
         </div>
       )}
 
-      {/* Translation Preview Modal */}
-      <TranslationPreviewModal
-        previewState={previewState}
-        previewData={previewData}
-        previewLoading={previewLoading}
-        previewError={previewError}
-        confirmLoading={confirmLoading}
-        onClose={closePreview}
-        onConfirm={confirmTranslatePreview}
-      />
       {/* Floating bar: Go to job when draft files exist */}
       {draftFiles.length > 0 && (
         <div className="floating-job-bar">

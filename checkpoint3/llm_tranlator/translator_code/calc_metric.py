@@ -117,10 +117,11 @@ def detect_illegal_nesting(text: str) -> Tuple[bool, bool, bool]:
     какие-либо другие теги.
     Разрешённые вложения:
       - любые теги внутри цветового тега §X ... §!
+      - $VAR$ внутри [script] (Stellaris string interpolation: [GetName $COUNTRY$])
     Запрещенные:
       - любой тег внутри $...$
       - любой тег внутри £...£
-      - любой тег внутри [....]
+      - [script] или £icon£ внутри [....]
     """
     tokens = extract_tag_tokens(text)
 
@@ -142,7 +143,12 @@ def detect_illegal_nesting(text: str) -> Tuple[bool, bool, bool]:
                 elif outer.kind == "pound":
                     malformed_icons = True
                 elif outer.kind == "script":
-                    malformed_scripts = True
+                    # Inside [script] tags, $VAR$ is allowed (Stellaris
+                    # string interpolation: [GetName $COUNTRY$]).
+                    # Prohibited: nested script ([[]]), pound (£icon£).
+                    allowed_inside_script = {"dollar"}
+                    if inner.kind not in allowed_inside_script:
+                        malformed_scripts = True
 
     return malformed_placeholders, malformed_icons, malformed_scripts
 
@@ -983,3 +989,54 @@ class ScoreSet:
             compilability=comp_scores,
             final_score=final_scores,
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for detect_illegal_nesting
+# ---------------------------------------------------------------------------
+def _test_detect_illegal_nesting() -> None:
+    """
+    Проверяет корректность определения illegal nesting.
+    Запуск: python -m translator_code.calc_metric
+    """
+    # NOTE: detect_illegal_nesting uses regex-based token extraction,
+    # so it can only detect overlap between well-formed tokens.
+    # Cases like $foo $bar$ or [[Inner]] are NOT detected here
+    # because the regexes only extract complete, well-formed tags.
+    # Those are instead caught by summarize_tags via character counting.
+    tests = [
+        # --- PASS cases (valid nesting / no overlap) ---
+        ("[GetName $COUNTRY$]", False, False, False,
+         "dollar inside script — valid Stellaris interpolation"),
+        ("['edict:foo', $bar$]", False, False, False,
+         "dollar inside script with quotes"),
+        ("§Y$VAR$§!", False, False, False,
+         "dollar inside color — skipped by this function"),
+        ("", False, False, False,
+         "empty string — no tags"),
+
+        # --- FAIL cases (illegal nesting, detectable via token overlap) ---
+        ("[foo £icon£]", False, False, True,
+         "pound inside script — illegal"),
+    ]
+
+    all_ok = True
+    for text, ep, ei, es, label in tests:
+        p, i, s = detect_illegal_nesting(text)
+        ok = (p == ep and i == ei and s == es)
+        if not ok:
+            all_ok = False
+            print(f"  [FAIL] {label}: {text!r}")
+            print(f"         expected placeholder={ep} icon={ei} script={es}")
+            print(f"         got      placeholder={p} icon={i} script={s}")
+
+    n = len(tests)
+    if all_ok:
+        print(f"\nAll {n} tests PASSED.")
+    else:
+        print(f"\nSome tests FAILED (see above).")
+    assert all_ok, f"Some tests FAILED (see above)"
+
+
+if __name__ == "__main__":
+    _test_detect_illegal_nesting()

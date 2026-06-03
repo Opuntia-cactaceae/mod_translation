@@ -37,6 +37,7 @@ export function useJobConfigEditing(options: UseJobConfigEditingOptions) {
       batch_size: formatConfigValue(getConfigValue(cfg, 'batch_size')),
       prompt_profile: formatConfigValue(getConfigValue(cfg, 'prompt.profile_name')),
       protection_strategy: formatConfigValue(getConfigValue(cfg, 'protection.strategy')),
+      rule_set_ids: (getConfigValue(cfg, 'protection.rule_set_ids') as string[] | undefined)?.join(',') ?? '',
       validator: formatConfigValue(getConfigValue(cfg, 'validation.validator_name')),
     });
   }, []);
@@ -55,6 +56,9 @@ export function useJobConfigEditing(options: UseJobConfigEditingOptions) {
       if (editConfigForm.batch_size) payload.batch_size = Number(editConfigForm.batch_size);
       if (editConfigForm.prompt_profile) payload['prompt.profile_name'] = editConfigForm.prompt_profile;
       if (editConfigForm.protection_strategy) payload['protection.strategy'] = editConfigForm.protection_strategy;
+      if (editConfigForm.rule_set_ids) {
+        payload['protection.rule_set_ids'] = editConfigForm.rule_set_ids.split(',').filter(Boolean);
+      }
       if (editConfigForm.validator) payload['validation.validator_name'] = editConfigForm.validator;
 
       const res = await api.updateJobConfig(jobId, { config: payload });

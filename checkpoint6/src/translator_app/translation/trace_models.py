@@ -6,7 +6,7 @@ Provides structured event, snapshot, and stats models used by
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +45,7 @@ class TraceEventType(str, Enum):
     JOB_COMPLETED = "job_completed"
     JOB_FAILED = "job_failed"
     JOB_INTERRUPTED = "job_interrupted"
+    PROTECTION_SNAPSHOT_CREATED = "protection_snapshot_created"
 
 
 class TranslationTraceEvent(BaseModel):
@@ -56,7 +57,7 @@ class TranslationTraceEvent(BaseModel):
     batch_index: int = 0
     unit_ids: List[str] = Field(default_factory=list)
     event_type: TraceEventType = TraceEventType.BATCH_STARTED
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     provider: str = ""
     model: str = ""
     src_lang: str = ""
@@ -104,6 +105,7 @@ class TraceUnitStatus(str, Enum):
     TRANSLATED = "translated"
     FAILED = "failed"
     CACHED = "cached"
+    SKIPPED = "skipped_placeholder_only"
 
 
 class TraceUnitEntry(BaseModel):
@@ -118,7 +120,7 @@ class TraceUnitEntry(BaseModel):
     status: TraceUnitStatus = TraceUnitStatus.PENDING
     error_message: str = ""
     batch_index: int = 0
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 # ---------------------------------------------------------------------------

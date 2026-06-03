@@ -166,16 +166,40 @@ class ManifestDebugInfo:
 
 @dataclass
 class AnalysisDebugInfo:
-    """Analysis-related debug info for a file."""
+    """Analysis-related debug info for a file.
+
+    ``protection_metadata`` is populated when the analysis context has
+    access to a ``RuntimeProtectionContext`` — currently only when the
+    analysis is triggered from a runtime job (not from the scanner).
+    It carries the protection snapshot hash, strategy name, and
+    applied rule count so that operators can correlate analysis
+    results with the protection state at translation time.
+    """
 
     latest_analysis_id: Optional[str] = None
     latest_analysis_status: Optional[str] = None
     latest_analysis_at: Optional[str] = None
     analysis_source_hash: Optional[str] = None
     analysis_translated_hash: Optional[str] = None
-    validity_state: str = "missing"  # "missing" | "valid" | "outdated"
+    validity_state: str = "not_analyzed"  # "not_analyzed" | "current" | "outdated" | "unknown"
     diagnostics: List[Dict[str, Any]] = field(default_factory=list)
     history_count: int = 0
+    protection_metadata: Optional[Dict[str, Any]] = None
+    snapshot_analysis: Optional[Dict[str, Any]] = None
+    # Shadow/debug result from the SnapshotAwareAnalyzer (Phase 4).
+    # Present only when the output file has been analyzed and the
+    # OutputAnalysisService has a cached SnapshotAnalysisResult.
+    # Never persisted — purely for observability via the debug endpoint.
+    divergence: Optional[Dict[str, Any]] = None
+    # Legacy vs. snapshot divergence classification (Phase 6D).
+    # Present only when both legacy and snapshot analyses have been run.
+    # Purely informational — never influences scores, diagnostics, or status.
+    profile_staleness: Optional[Dict[str, Any]] = None
+    # Profile staleness info (Phase 8E).
+    # Populated when the latest analysis was run against a protection
+    # profile.  Contains ``status``, ``analysis_profile_id``,
+    # ``analysis_profile_fingerprint``, ``current_profile_fingerprint``,
+    # and ``message``.  ``None`` when not applicable.
 
 
 @dataclass
@@ -236,7 +260,7 @@ class OutputFileDebugSnapshot:
     # Validity
     analysis_stale: bool = False
     stale_reason: Optional[str] = None
-    latest_analysis_state: str = "missing"
+    latest_analysis_state: str = "not_analyzed"
 
     # Sub-structures
     manifest: ManifestDebugInfo = field(default_factory=ManifestDebugInfo)

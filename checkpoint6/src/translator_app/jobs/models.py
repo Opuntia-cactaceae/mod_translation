@@ -117,6 +117,8 @@ class TranslationJob:
     # --- Timestamps ---
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -151,6 +153,10 @@ class TranslationJob:
             )
         self.status = new_status
         self.updated_at = datetime.now()
+        if new_status == JobStatus.RUNNING and self.started_at is None:
+            self.started_at = datetime.now()
+        if new_status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            self.completed_at = datetime.now()
 
     # ------------------------------------------------------------------
     # Progress helpers
