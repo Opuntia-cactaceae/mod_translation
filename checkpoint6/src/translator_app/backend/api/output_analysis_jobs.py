@@ -1,0 +1,292 @@
+"""API endpoints for async output analysis jobs."""
+
+import json
+import logging
+import threading
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, Query
+
+from translator_app.backend.deps import Services, get_services
+from translator_app.backend.errors import APIError, NOT_FOUND
+from translator_app.backend.schemas.output_files import (
+    CreateOutputAnalysisJobRequestSchema,
+    OutputAnalysisJobListResponse,
+    OutputAnalysisJobResponse,
+)
+from translator_app.outputs.analysis.jobs import CreateOutputAnalysisJobRequest
+from translator_app.outputs.analysis.jobs import OutputAnalysisJobStatus
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["output-analysis-jobs"])
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _job_to_response(job) -> OutputAnalysisJobResponse:
+    """Convert a domain job model to a Pydantic response."""
+    scope = {}
+    if job.scope_json:
+        try:
+            scope = json.loads(job.scope_json)
+        except (json.JSONDecodeError, TypeError):
+            scope = {}
+
+    checks: List[str] = []
+    if job.checks_json:
+        try:
+            checks = json.loads(job.checks_json)
+        except (json.JSONDecodeError, TypeError):
+            checks = []
+
+    return OutputAnalysisJobResponse(
+        id=job.id,
+        scope_type=job.scope_type,
+        scope=scope,
+        checks=checks,
+        status=job.status,
+        total_count=job.total_count,
+        processed_count=job.processed_count,
+        skipped_count=job.skipped_count,
+        passed_count=job.passed_count,
+        warning_count=job.warning_count,
+        failed_count=job.failed_count,
+        error_count=job.error_count,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        cancel_requested=job.cancel_requested,
+        error_message=job.error_message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+def _ensure_worker_alive(svcs: Services) -> bool:
+    """Ensure the analysis worker thread is alive and accepting jobs.
+
+    If the worker is not alive, attempts to start it.  Returns True if
+    the worker is (now) alive, False otherwise.
+    """
+    if svcs.analysis_worker.is_alive():
+        return True
+    logger.warning("Analysis worker thread is not alive — attempting restart")
+    try:
+        svcs.analysis_worker.start()
+        return True
+    except Exception:
+        logger.exception("Failed to restart analysis worker")
+        return False
+
+
+def _run_job_in_background(svcs: Services, job_id: str) -> None:
+    """Run an analysis job in a background thread as a fallback.
+
+    Used when the primary worker thread is unavailable.  The thread
+    calls ``run_job`` directly on the worker so all job lifecycle
+    (mark_running, update_progress, mark_completed) is handled.
+    """
+    def _run():
+        try:
+            svcs.analysis_worker.run_job(job_id)
+        except Exception:
+            logger.exception(
+                "Inline background analysis job %s failed", job_id,
+            )
+    t = threading.Thread(target=_run, daemon=True, name=f"analysis-inline-{job_id[:8]}")
+    t.start()
+
+
+@router.post(
+    "/output-analysis-jobs",
+    response_model=OutputAnalysisJobResponse,
+    status_code=201,
+)
+def create_analysis_job(
+    body: CreateOutputAnalysisJobRequestSchema,
+    svcs: Services = Depends(get_services),
+):
+    """Create and start a new output analysis job.
+
+    The job is submitted to the background analysis worker.  If the
+    worker is not available, the job is run inline in a fallback thread.
+    """
+    # Validate scope
+    if body.scope_type not in ("job", "mod", "group", "selected"):
+        raise APIError(
+            code="INVALID_PARAMS",
+            message=f"Invalid scope_type: {body.scope_type}. Must be one of: job, mod, group, selected",
+            status_code=422,
+        )
+
+    if body.scope_type == "selected":
+        if not body.output_file_ids:
+            raise APIError(
+                code="INVALID_PARAMS",
+                message="output_file_ids is required when scope_type is 'selected'",
+                status_code=422,
+            )
+    elif not body.job_id:
+        raise APIError(
+            code="INVALID_PARAMS",
+            message="job_id is required for scope_type '%s'" % body.scope_type,
+            status_code=422,
+        )
+
+    if body.scope_type == "mod" and not body.mod_id:
+        raise APIError(
+            code="INVALID_PARAMS",
+            message="mod_id is required when scope_type is 'mod'",
+            status_code=422,
+        )
+
+    if body.scope_type == "group" and not body.group_key:
+        raise APIError(
+            code="INVALID_PARAMS",
+            message="group_key is required when scope_type is 'group'",
+            status_code=422,
+        )
+
+    request = CreateOutputAnalysisJobRequest(
+        scope_type=body.scope_type,
+        job_id=body.job_id,
+        mod_id=body.mod_id,
+        group_key=body.group_key,
+        output_file_ids=body.output_file_ids,
+        checks=body.checks,
+        only_stale=body.only_stale,
+    )
+
+    job = svcs.analysis_job_service.create_job(request)
+
+    # Submit to worker (or fallback to inline thread)
+    if _ensure_worker_alive(svcs):
+        svcs.analysis_worker.submit(job.id)
+    else:
+        logger.warning(
+            "Analysis worker unavailable — running job %s inline", job.id,
+        )
+        _run_job_in_background(svcs, job.id)
+
+    return _job_to_response(job)
+
+
+# ---------------------------------------------------------------------------
+# Start endpoint — explicitly start a previously created job
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/output-analysis-jobs/{analysis_job_id}/start",
+    response_model=OutputAnalysisJobResponse,
+)
+def start_analysis_job(
+    analysis_job_id: str,
+    svcs: Services = Depends(get_services),
+):
+    """Explicitly start (or re-submit) an analysis job.
+
+    If the job is already in a terminal state (completed / failed /
+    cancelled) the request is a no-op and the existing job is returned.
+    Otherwise the job is submitted to the analysis worker for processing.
+    """
+    job = svcs.analysis_job_service.get_job(analysis_job_id)
+    if not job:
+        raise APIError(
+            code=NOT_FOUND,
+            message=f"Analysis job not found: {analysis_job_id}",
+            status_code=404,
+        )
+
+    if job.is_terminal:
+        logger.debug(
+            "Analysis job %s is already terminal (%s), start is a no-op",
+            analysis_job_id, job.status,
+        )
+        return _job_to_response(job)
+
+    # Re-queue if previously running or queued (e.g. after worker restart)
+    if job.status == OutputAnalysisJobStatus.RUNNING.value:
+        svcs.analysis_job_service._repo.mark_queued(analysis_job_id)
+
+    if _ensure_worker_alive(svcs):
+        svcs.analysis_worker.submit(analysis_job_id)
+    else:
+        logger.warning(
+            "Analysis worker unavailable — running job %s inline", analysis_job_id,
+        )
+        _run_job_in_background(svcs, analysis_job_id)
+
+    # Reload job to reflect updated state
+    job = svcs.analysis_job_service.get_job(analysis_job_id)
+    return _job_to_response(job)
+
+
+@router.get(
+    "/output-analysis-jobs",
+    response_model=OutputAnalysisJobListResponse,
+)
+def list_analysis_jobs(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    svcs: Services = Depends(get_services),
+):
+    """List analysis jobs, optionally filtered by status."""
+    jobs = svcs.analysis_job_service.list_jobs(
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    total = svcs.analysis_job_service.count_jobs(status=status)
+    return OutputAnalysisJobListResponse(
+        items=[_job_to_response(j) for j in jobs],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/output-analysis-jobs/{analysis_job_id}",
+    response_model=OutputAnalysisJobResponse,
+)
+def get_analysis_job(
+    analysis_job_id: str,
+    svcs: Services = Depends(get_services),
+):
+    """Get a single analysis job by id."""
+    job = svcs.analysis_job_service.get_job(analysis_job_id)
+    if not job:
+        raise APIError(
+            code=NOT_FOUND,
+            message=f"Analysis job not found: {analysis_job_id}",
+            status_code=404,
+        )
+    return _job_to_response(job)
+
+
+@router.post(
+    "/output-analysis-jobs/{analysis_job_id}/cancel",
+    response_model=OutputAnalysisJobResponse,
+)
+def cancel_analysis_job(
+    analysis_job_id: str,
+    svcs: Services = Depends(get_services),
+):
+    """Request cancellation of an analysis job."""
+    job = svcs.analysis_job_service.cancel_job(analysis_job_id)
+    if not job:
+        raise APIError(
+            code=NOT_FOUND,
+            message=f"Analysis job not found: {analysis_job_id}",
+            status_code=404,
+        )
+    return _job_to_response(job)
