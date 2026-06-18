@@ -1,5 +1,6 @@
 import time
 import json
+import logging
 from typing import List, Dict, Optional
 from .base import ModelRuntime
 from .key_pool import create_key_pool, acquire_next_key, mark_key_rate_limited
@@ -7,6 +8,8 @@ from .retry_policy import classify_error, parse_retry_after, should_retry, compu
 from ..domain.results import RuntimeCallResult
 from ..domain.enums import ResponseOutcomeType
 from ..config.schema import RuntimeConfig
+
+logger = logging.getLogger(__name__)
 
 try:
     from openai import OpenAI
@@ -17,6 +20,51 @@ except ImportError:
     OpenAI = None
     ChatCompletion = None
 
+# --------------------------------------------------------------------------
+# Deprecated model alias mapping (DeepSeek API 2026 deprecation)
+#
+# As of 2026, deepseek-chat and deepseek-reasoner are deprecated
+# (EOL 2026-07-24) in favour of deepseek-v4-flash.  Old names
+# are transparently rewritten so existing jobs / saved configs
+# continue to work without manual migration.
+#
+# deepseek-chat    → deepseek-v4-flash (non-thinking mode)
+# deepseek-reasoner → deepseek-v4-flash (thinking/reasoning mode)
+# --------------------------------------------------------------------------
+
+_DEPRECATED_ALIASES: dict[str, str] = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-flash",
+}
+
+# --------------------------------------------------------------------------
+# Thinking mode indicators — when the user explicitly asked for reasoning,
+# we forward an extra_body hint so DeepSeek enables thinking.  The actual
+# response may still contain reasoning_content even without the hint
+# (handled in _call_api).  Non-thinking models ignore the hint.
+# --------------------------------------------------------------------------
+
+_THINKING_MODEL_PATTERNS = frozenset({"reasoner", "r1", "thinking"})
+
+
+def _wants_thinking(model_name: str) -> bool:
+    """Return True if the model name implies reasoning/thinking mode."""
+    lower = model_name.lower()
+    return any(pattern in lower for pattern in _THINKING_MODEL_PATTERNS)
+
+
+def _rewrite_model(model_name: str) -> tuple[str, bool]:
+    """Rewrites deprecated aliases and returns (canonical_name, wants_thinking).
+
+    Returns:
+        (actual model name to send to API, whether thinking should be requested).
+    """
+    canonical = _DEPRECATED_ALIASES.get(model_name, model_name)
+    # Only request thinking if the ORIGINAL name asked for it
+    thinking = _wants_thinking(model_name)
+    return canonical, thinking
+
+
 #штука для работы с дипсикусом, как старая с гроком
 #надеюсь я просто опишу его в ридмишке
 class DeepSeekRuntime(ModelRuntime):
@@ -25,6 +73,10 @@ class DeepSeekRuntime(ModelRuntime):
         if not DEEPSEEK_AVAILABLE:
             raise ImportError("OpenAI SDK not installed. Install with: pip install openai")
         self.config = runtime_config
+
+        # Rewrite deprecated aliases
+        _, _ = _rewrite_model(runtime_config.model_name)
+
         self.key_pool = create_key_pool(runtime_config.api_keys)
         self.models = [runtime_config.model_name] + runtime_config.fallback_models
         self.key_index = 0
@@ -105,32 +157,65 @@ class DeepSeekRuntime(ModelRuntime):
         timeout_sec = self.config.timeout_sec
         temperature = self.config.temperature
         max_completion_tokens = self.config.max_completion_tokens
+        base_url = self.config.base_url or "https://api.deepseek.com"
 
         last_exception = None
-        raw_response = None
         used_key_index = None
-        used_model = None
+        used_key_model = None
 
         for attempt in range(1, max_retries + 1):
             try:
                 self._apply_global_throttle()
                 key_idx, key, model = self._pick_available_pair()
                 used_key_index = key_idx
-                used_model = model
+                used_key_model = model
+
+                # Rewrite deprecated aliases and determine thinking mode
+                canonical_model, thinking = _rewrite_model(model)
                 self._ensure_client(key_idx, key)
 
                 start_time = time.time()
+
+                logger.debug(
+                    "deepseek request: provider=deepseek model=%s canonical=%s "
+                    "thinking=%s base_url=%s attempt=%d/%d timeout=%.1fs",
+                    model, canonical_model, thinking,
+                    base_url, attempt, max_retries, timeout_sec,
+                )
+
+                extra_body = (
+                    {"thinking": {"type": "enabled"}} if thinking else None
+                )
+
                 completion: ChatCompletion = self.client.chat.completions.create(
-                    model=model,
+                    model=canonical_model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_completion_tokens,
                     timeout=timeout_sec,
+                    extra_body=extra_body,
                 )
                 latency_ms = int((time.time() - start_time) * 1000)
                 self.last_call = time.time()
 
-                raw_text = (completion.choices[0].message.content or "").strip()
+                # DeepSeek R1 / reasoning models may return reasoning_content
+                # with an empty or near-empty content field.  Try content first,
+                # fall back to reasoning_content, then default to "".
+                message = completion.choices[0].message
+                content = getattr(message, "content", None)
+                reasoning = getattr(message, "reasoning_content", None)
+                raw_text = (content or reasoning or "").strip()
+
+                logger.debug(
+                    "deepseek response: model=%s canonical=%s content_len=%d "
+                    "reasoning_len=%d raw_text_len=%d preview=%r",
+                    model, canonical_model,
+                    len(content) if content else 0,
+                    len(reasoning) if reasoning else 0,
+                    len(raw_text),
+                    raw_text[:300],
+                )
+
                 usage = completion.usage
                 input_tokens = usage.prompt_tokens if usage else None
                 output_tokens = usage.completion_tokens if usage else None
@@ -142,7 +227,7 @@ class DeepSeekRuntime(ModelRuntime):
                     success=True,
                     raw_text=raw_text,
                     latency_ms=latency_ms,
-                    used_model=model,
+                    used_model=canonical_model,
                     used_key_index=key_idx,
                     input_token_count=input_tokens,
                     output_token_count=output_tokens,
@@ -155,9 +240,27 @@ class DeepSeekRuntime(ModelRuntime):
 
             except Exception as e:
                 last_exception = e
-                raw_response = getattr(e, "response", None)
                 error_type = classify_error(e)
                 retry_after = parse_retry_after(e)
+
+                # --- Detailed connection error diagnostics ---
+                exc_name = type(e).__name__
+                exc_repr = repr(e)
+                exc_cause = getattr(e, "__cause__", None)
+                exc_context = getattr(e, "__context__", None)
+                cause_repr = repr(exc_cause) if exc_cause else None
+                context_repr = repr(exc_context) if exc_context else None
+                status_code = getattr(e, "status_code", None)
+
+                logger.warning(
+                    "deepseek error: attempt=%d/%d error_type=%s exc=%s "
+                    "repr=%s status=%s cause=%s context=%s base_url=%s "
+                    "model=%s canonical=%s thinking=%s",
+                    attempt, max_retries, error_type, exc_name,
+                    exc_repr[:300], status_code,
+                    (cause_repr or "")[:200], (context_repr or "")[:200],
+                    base_url, model, canonical_model, thinking,
+                )
 
                 if error_type == "billing":
                     break
@@ -166,9 +269,9 @@ class DeepSeekRuntime(ModelRuntime):
                     if used_key_index is not None:
                         cooldown = retry_after or 30.0
                         self._mark_key_rate_limited(used_key_index, cooldown)
-                    if used_model is not None:
+                    if used_key_model is not None:
                         cooldown = retry_after or 30.0
-                        self._mark_model_rate_limited(used_model, cooldown)
+                        self._mark_model_rate_limited(used_key_model, cooldown)
 
                 if error_type == "timeout":
                     if used_key_index is not None:
@@ -181,14 +284,25 @@ class DeepSeekRuntime(ModelRuntime):
                 delay = compute_retry_delay_sec(error_type, attempt, retry_after)
                 time.sleep(delay)
 
-        error_msg = str(last_exception) if last_exception else "Unknown error"
-        outcome = self._determine_outcome(last_exception, error_type) if last_exception else ResponseOutcomeType.UNKNOWN_ERROR
+        # Build a rich error message including the exception type and cause
+        exc_name = type(last_exception).__name__ if last_exception else ""
+        exc_cause = getattr(last_exception, "__cause__", None) if last_exception else None
+        cause_msg = f"; caused by {type(exc_cause).__name__}: {exc_cause}" if exc_cause else ""
+
+        error_msg = (
+            f"[{error_type}] {exc_name}: {last_exception}{cause_msg}"
+            if last_exception else f"[{error_type}] Unknown error"
+        )
+        outcome = (
+            self._determine_outcome(last_exception, error_type)
+            if last_exception else ResponseOutcomeType.UNKNOWN_ERROR
+        )
 
         return RuntimeCallResult(
             success=False,
             raw_text=None,
             latency_ms=0,
-            used_model=used_model or self.config.model_name,
+            used_model=used_key_model or self.config.model_name,
             used_key_index=used_key_index,
             error_type=error_type,
             error_message=error_msg,
@@ -206,7 +320,9 @@ class DeepSeekRuntime(ModelRuntime):
             return ResponseOutcomeType.RATE_LIMITED
         if error_type == "timeout":
             return ResponseOutcomeType.TIMEOUT
-        if error_type == "billing":
+        if error_type in ("billing", "auth"):
+            return ResponseOutcomeType.TRANSPORT_ERROR
+        if error_type in ("dns", "tls", "connection"):
             return ResponseOutcomeType.TRANSPORT_ERROR
         return ResponseOutcomeType.UNKNOWN_ERROR
 

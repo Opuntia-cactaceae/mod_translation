@@ -1,9 +1,10 @@
+import type { ReactNode } from 'react';
 import { useDragSafeClose } from '../../hooks/useDragSafeClose';
 
 interface ConfirmDialogProps {
   open: boolean;
   title?: string;
-  message: string;
+  message: ReactNode;
   confirmLabel?: string;
   confirmClass?: string;
   cancelLabel?: string;

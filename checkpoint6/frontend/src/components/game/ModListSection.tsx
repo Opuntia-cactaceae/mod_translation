@@ -526,9 +526,9 @@ export function ModListSection({ mods, onRefreshMods }: ModListSectionProps) {
             >
               <input
                 type="checkbox"
+                className="form-checkbox"
                 checked={showOnlySelected}
                 onChange={(e) => setShowOnlySelected(e.target.checked)}
-                style={{ accentColor: 'var(--color-primary)', margin: 0 }}
               />
               Show only selected source language files
             </label>

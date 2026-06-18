@@ -1393,6 +1393,7 @@ export interface ProtectionProfileSchema {
   description?: string;
   game_id?: string | null;
   mod_id?: string | null;
+  candidate_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1733,6 +1734,17 @@ export interface PairSuggestionResponse {
   reason: string;
 }
 
+export interface SuggestFilterScope {
+  include_filter?: string;
+  exclude_filter?: string;
+  extensions?: string[];
+}
+
+export interface SuggestPairsRequest {
+  scope: 'all' | 'filtered';
+  filters?: SuggestFilterScope;
+}
+
 export interface AlignmentResponse {
   id: string;
   pair_id: string;
@@ -1740,6 +1752,7 @@ export interface AlignmentResponse {
   source_revision_hash?: string | null;
   translated_revision_hash?: string | null;
   operations_json: string;
+  last_applied_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1748,6 +1761,17 @@ export interface SaveAlignmentRequest {
   operations_json: string;
   source_revision_hash?: string | null;
   translated_revision_hash?: string | null;
+}
+
+export interface SavePairingFileContentRequest {
+  content: string;
+}
+
+export interface SavePairingFileContentResponse {
+  file_id: string;
+  content_hash: string;
+  modified_at: string;
+  size_bytes: number;
 }
 
 export interface NormalizationOperation {
@@ -1765,10 +1789,44 @@ export interface AlignmentPreviewResponse {
   operations: NormalizationOperation[];
   source_preview?: Record<string, unknown> | null;
   translated_preview?: Record<string, unknown> | null;
+  warnings?: string[];
+}
+
+// ====================================================================
+// Apply alignment (destructive — rewrites files on disk)
+// ====================================================================
+
+export interface ApplyAlignmentRequest {
+  apply_source: boolean;
+  apply_translated: boolean;
+  expected_source_hash?: string | null;
+  expected_translated_hash?: string | null;
+}
+
+export interface FileApplyResult {
+  file_id: string;
+  file_name: string;
+  old_content_hash?: string | null;
+  new_content_hash: string;
+  old_line_count: number;
+  new_line_count: number;
+  line_count_changed: boolean;
+  size_bytes: number;
+}
+
+export interface ApplyAlignmentResponse {
+  pair_id: string;
+  source_applied: boolean;
+  translated_applied: boolean;
+  source_result?: FileApplyResult | null;
+  translated_result?: FileApplyResult | null;
+  operations_applied: NormalizationOperation[];
+  warnings: string[];
+  last_applied_at?: string | null;
 }
 
 export interface LearnFromPairsRequest {
-  profile_id: string;
+  profile_id?: string | null;
   pair_ids?: string[] | null;
   include_accepted_pairs: boolean;
   include_manual_pairs: boolean;
@@ -1778,10 +1836,168 @@ export interface LearnFromPairsRequest {
 export interface LearnFromPairsResponse {
   profile_id: string;
   samples_collected: number;
+  samples_used: number;
+  samples_truncated: number;
   samples_added: number;
+  samples_duplicate_skipped: number;
   candidates_new: number;
   candidates_updated: number;
   total_candidates: number;
   files_processed: number;
+  normalized_pairs_used: number;
+  raw_pairs_used: number;
   error?: string | null;
+}
+
+// ====================================================================
+// Bulk cleanup
+// ====================================================================
+
+export interface BulkDeleteRequest {
+  pair_ids: string[];
+}
+
+export interface BulkDeleteResponse {
+  deleted_count: number;
+}
+
+export interface BulkUpdateRequest {
+  pair_ids: string[];
+}
+
+export interface BulkUpdateResponse {
+  requested: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+
+export interface FindIdenticalRequest {
+  mode: 'chars' | 'lines';
+}
+
+export interface IdenticalPairInfo {
+  pair_id: string;
+  source_file: string;
+  translated_file: string;
+  status: string;
+  confidence: number;
+}
+
+export interface FindIdenticalResponse {
+  pair_ids: string[];
+  count: number;
+  examples: IdenticalPairInfo[];
+  errors: number;
+  error_details: string[];
+}
+
+export interface PreviewFilenameRequest {
+  substring: string;
+}
+
+export interface PreviewFilenameItem {
+  pair_id: string;
+  source_file: string | null;
+  translated_file: string | null;
+  status: string;
+  confidence: number;
+}
+
+export interface PreviewFilenameResponse {
+  pair_ids: string[];
+  count: number;
+  examples: PreviewFilenameItem[];
+}
+
+// ====================================================================
+// Exact line match
+// ====================================================================
+
+export interface ExactLineMatchItem {
+  pair_id: string;
+  source_file: string;
+  translated_file: string;
+  exact_line_match_percent: number;
+  exact_line_match_count: number;
+  exact_line_match_total_count: number;
+}
+
+export interface ExactLineMatchPreviewRequest {
+  threshold_percent: number;
+}
+
+export interface ExactLineMatchPreviewResponse {
+  threshold_percent: number;
+  matches: ExactLineMatchItem[];
+}
+
+export interface ExactLineMatchDeleteRequest {
+  threshold_percent: number;
+}
+
+export interface ExactLineMatchDeleteResponse {
+  deleted_count: number;
+}
+
+// --- Import / Export Transfer ---
+export interface TransferExportOptionItem {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface TransferExportOptionsResponse {
+  rule_sets: TransferExportOptionItem[];
+  translation_profiles: TransferExportOptionItem[];
+  total: number;
+}
+
+export interface TransferCreateExportPackageRequest {
+  rule_set_ids: string[];
+  profile_ids: string[];
+}
+
+export interface TransferImportPreviewRequest {
+  package: Record<string, unknown>;
+  conflict_policy: 'skip_existing' | 'overwrite_existing' | 'import_as_copy';
+}
+
+export interface TransferImportApplyRequest {
+  package: Record<string, unknown>;
+  conflict_policy: 'skip_existing' | 'overwrite_existing' | 'import_as_copy';
+}
+
+export interface TransferImportPreviewItem {
+  original_id: string;
+  name: string;
+  kind: 'rule_set' | 'translation_profile';
+  action: 'create' | 'skip' | 'overwrite' | 'import_as_copy';
+  new_id?: string | null;
+  new_name?: string | null;
+  warning?: string | null;
+  diagnostics: Array<{ level: string; code: string; message: string }>;
+}
+
+export interface TransferImportPreviewResponse {
+  items: TransferImportPreviewItem[];
+  total: number;
+  create_count: number;
+  skip_count: number;
+  overwrite_count: number;
+  import_as_copy_count: number;
+  warnings: string[];
+  errors: string[];
+  rule_set_id_map: Record<string, string>;
+}
+
+export interface TransferImportApplyResponse {
+  success: boolean;
+  imported: number;
+  skipped: number;
+  overwritten: number;
+  imported_as_copy: number;
+  errors: string[];
+  warnings: string[];
+  rule_set_id_map: Record<string, string>;
 }

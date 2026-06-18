@@ -102,6 +102,7 @@ from translator_app.backend.api.protection_validation import router as protectio
 from translator_app.backend.api.rule_sets import router as rule_sets_router
 from translator_app.backend.api.divergence_summary import router as divergence_summary_router
 from translator_app.backend.api.pairing_projects import router as pairing_projects_router
+from translator_app.backend.api.transfer import router as transfer_router
 
 
 def create_app() -> FastAPI:
@@ -164,6 +165,7 @@ def create_app() -> FastAPI:
     app.include_router(rule_sets_router, prefix="/api")
     app.include_router(divergence_summary_router)
     app.include_router(pairing_projects_router)
+    app.include_router(transfer_router)
 
     return app
 

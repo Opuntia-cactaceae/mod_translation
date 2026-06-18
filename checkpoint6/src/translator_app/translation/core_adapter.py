@@ -48,6 +48,44 @@ from translator_app.protection.ranges import SourceRange
 logger = logging.getLogger(__name__)
 
 
+# ------------------------------------------------------------------
+# Module-level helpers
+# ------------------------------------------------------------------
+
+
+def _logmsg(logging_service, event_type: str, details: str) -> None:
+    """Log a structured message through the logging service if available.
+
+    Falls back to ``logger.info`` when no logging service is present.
+    The event_type and details are combined into a single message — no
+    API keys or secrets are ever logged.
+    """
+    msg = f"[{event_type}] {details}"
+    if logging_service is not None:
+        try:
+            logging_service.log_translation_event({"event_type": event_type, "details": details})
+        except Exception:
+            logger.info(msg)
+    else:
+        logger.info(msg)
+
+
+def _fmt_sig(sig) -> str:
+    """Format a runtime signature tuple for debug logging.
+
+    Output example:
+        provider=deepseek | model=deepseek-chat | api_key_id=abc123 |
+        timeout=30.0 | retries=3 | temp=0.0 | max_tok=None
+    """
+    if sig is None:
+        return "None"
+    provider, model, key_id, timeout, retries, temp, max_tok = sig
+    return (
+        f"provider={provider} | model={model} | api_key_id={key_id[:8] if key_id else 'None'} | "
+        f"timeout={timeout} | retries={retries} | temp={temp} | max_tok={max_tok}"
+    )
+
+
 # ===================================================================
 # MockRuntime — mock translator (no real LLM calls)
 # ===================================================================
@@ -184,6 +222,7 @@ class TranslationCoreAdapter:
         """
         self._explicit_runtime = runtime
         self._runtime: Optional[Any] = runtime  # None = lazy init
+        self._runtime_signature: Optional[tuple] = None  # None = not yet computed
         self._protection = protection_service
         self._log = logging_service
         self._diag = diagnostics_service
@@ -759,6 +798,17 @@ class TranslationCoreAdapter:
                 diagnostics={"latency_ms": elapsed_ms},
             )
 
+        # --- Diagnostic: log batch outcome ---
+        logger.debug(
+            "batch %d outcome: translated=%d failed=%d total=%d provider=%s model=%s",
+            batch_idx,
+            stats.translated_units,
+            stats.failed_units,
+            stats.total_units,
+            getattr(getattr(config, "runtime", None), "provider", ""),
+            getattr(getattr(config, "runtime", None), "model", ""),
+        )
+
         # --- Map rows back to TranslationUnit ---
         updated_units = self._rows_to_units(rows, batch_units, stats)
 
@@ -806,19 +856,82 @@ class TranslationCoreAdapter:
     # Internal: lazy runtime initialisation
     # ------------------------------------------------------------------
 
-    def _ensure_runtime(self, config: TranslationConfig) -> None:
-        """Lazily initialise the runtime if not already set.
+    @staticmethod
+    def _build_runtime_signature(config: TranslationConfig) -> tuple:
+        """Build an immutable signature from runtime-relevant config fields.
 
-        * If an explicit runtime was passed to the constructor → use it.
-        * If config.runtime.provider is set and not ``"mock"`` →
-          create a ``RealRuntime`` backed by translator_benchmark.
-        * Otherwise → use ``MockRuntime``.
+        Fields used (in stable order):
+            provider, model, api_key_id, timeout_sec, max_retries,
+            temperature, max_completion_tokens
 
-        This preserves backward compatibility: all existing callers that
-        do not pass a runtime or config continue to get MockRuntime.
+        The signature does **not** include the actual API key value, so it
+        is safe to log.
         """
-        if self._runtime is not None:
-            return  # Already initialised (explicit or lazy)
+        rt = config.runtime
+        return (
+            rt.provider,
+            rt.model,
+            rt.api_key_id,
+            rt.timeout_sec,
+            rt.max_retries,
+            rt.temperature,
+            rt.max_completion_tokens,
+        )
+
+    def _ensure_runtime(self, config: TranslationConfig) -> None:
+        """Lazily initialise or re-create the runtime based on config.
+
+        * If an explicit runtime was passed to the constructor → keep it
+          (never mutate injected dependencies).
+        * If no runtime exists yet → create one.
+        * If a lazily-created runtime exists but the config signature has
+          *changed* (e.g. different provider, model, or api_key_id) →
+          re-create it so the new config takes effect.
+
+        This prevents the sticky-runtime bug where a singleton adapter
+        kept using an old API key or provider after the user changed them.
+        """
+        # Explicit runtime — never touch it (tests inject MockRuntime here).
+        if self._explicit_runtime is not None:
+            return
+
+        new_sig = self._build_runtime_signature(config)
+
+        # First call — create from scratch.
+        if self._runtime is None:
+            provider = config.runtime.provider
+            if provider and provider != "mock":
+                from translator_app.translation.runtime_adapter import RealRuntime
+
+                self._runtime = RealRuntime(
+                    config=config,
+                    secrets_service=self._secrets,
+                    logging_service=self._log,
+                    diagnostics_service=self._diag,
+                    trace_service=self._trace,
+                )
+            else:
+                self._runtime = MockRuntime()
+            self._runtime_signature = new_sig
+            return
+
+        # Already initialised — compare signatures.
+        if self._runtime_signature == new_sig:
+            _logmsg(
+                self._log,
+                "RUNTIME_REUSE",
+                f"signature={_fmt_sig(new_sig)}",
+            )
+            return
+
+        # Signature differs → re-create.
+        _logmsg(
+            self._log,
+            "RUNTIME_RECREATE",
+            f"old_signature={_fmt_sig(self._runtime_signature)} "
+            f"new_signature={_fmt_sig(new_sig)} "
+            f"reason=runtime_config_changed",
+        )
 
         provider = config.runtime.provider
         if provider and provider != "mock":
@@ -833,6 +946,7 @@ class TranslationCoreAdapter:
             )
         else:
             self._runtime = MockRuntime()
+        self._runtime_signature = new_sig
 
     # ------------------------------------------------------------------
     # Internal: lazy protection snapshot creation
@@ -1035,12 +1149,30 @@ class TranslationCoreAdapter:
             if row is not None and row.translated_text:
                 unit.translated_text = row.translated_text
                 unit.status = STATUS_TRANSLATED
+                logger.debug(
+                    "rows_to_units: unit %s -> %s (has translation, len=%d)",
+                    getattr(unit, "entry_id", "?") or getattr(unit, "key", "?"),
+                    STATUS_TRANSLATED,
+                    len(row.translated_text),
+                )
             elif row is not None and row.translated_text == "":
                 unit.translated_text = ""
                 unit.status = STATUS_FAILED
                 unit.error_message = row.error_message
+                logger.debug(
+                    "rows_to_units: unit %s -> %s (empty translation)",
+                    getattr(unit, "entry_id", "?") or getattr(unit, "key", "?"),
+                    STATUS_FAILED,
+                )
             elif row is not None and row.translated_text is None:
-                unit.error_message = row.error_message
+                unit.status = STATUS_FAILED
+                unit.error_message = row.error_message or "Translation failed (no translated text produced)"
+                logger.debug(
+                    "rows_to_units: unit %s -> %s (no translation, error=%r)",
+                    getattr(unit, "entry_id", "?") or getattr(unit, "key", "?"),
+                    STATUS_FAILED,
+                    unit.error_message[:200],
+                )
             # else: leave as-is (pending)
 
             updated.append(unit)

@@ -53,7 +53,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         <div
           style={{
             padding: '1.5rem',
-            borderRadius: 8,
+            borderRadius: 'var(--radius)',
             backgroundColor: '#fff3f3',
             border: '1px solid #f5c6cb',
             color: '#721c24',
@@ -87,7 +87,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                   padding: '0.75rem',
                   backgroundColor: '#fefefe',
                   border: '1px solid #e0e0e0',
-                  borderRadius: 4,
+                  borderRadius: 'var(--radius-sm)',
                   overflow: 'auto',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-all',

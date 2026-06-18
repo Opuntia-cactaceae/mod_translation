@@ -421,8 +421,8 @@ export function GenericFileSection({
 
   /* ---- Build label for handler option ---- */
   function handlerLabel(opt: FileHandlerModel): string {
-    const extStr = opt.extensions.join(', ');
-    return `${opt.label} (${extStr})`;
+    const count = opt.extensions.length;
+    return count > 0 ? `${opt.label} (${count})` : opt.label;
   }
 
   /* ---- Render ---- */
@@ -465,6 +465,14 @@ export function GenericFileSection({
               <option key={opt.id} value={opt.id}>{handlerLabel(opt)}</option>
             ))}
           </select>
+          {/* Extension badges for the selected handler */}
+          {getExtensions(handler).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.35rem' }}>
+              {getExtensions(handler).map(ext => (
+                <span key={ext} className="badge badge-muted" style={{ textTransform: 'none', fontSize: '0.65rem' }}>{ext}</span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -474,6 +482,7 @@ export function GenericFileSection({
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.8rem', marginBottom: '0.5rem' }}>
           <input
             type="checkbox"
+            className="form-checkbox"
             checked={recursiveScan}
             onChange={e => setRecursiveScan(e.target.checked)}
           />
@@ -545,6 +554,7 @@ export function GenericFileSection({
                 onToggleDraftFile={handleToggleDraftFile}
                 onOpenFolder={handleOpenFolder}
                 draftPathSet={draftPathSet}
+                flattenSingletons={groupingMode !== 'smart'}
               />
             ))}
           </div>

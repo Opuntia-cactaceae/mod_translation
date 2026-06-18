@@ -143,12 +143,36 @@ import type {
   UpdatePairRequest,
   PairPreviewResponse,
   PairSuggestionResponse,
+  SuggestFilterScope,
+  SuggestPairsRequest,
   AlignmentResponse,
   SaveAlignmentRequest,
+  SavePairingFileContentRequest,
+  SavePairingFileContentResponse,
   PreviewAlignmentRequest,
   AlignmentPreviewResponse,
+  ApplyAlignmentRequest,
+  ApplyAlignmentResponse,
   LearnFromPairsRequest,
   LearnFromPairsResponse,
+  BulkDeleteRequest,
+  BulkDeleteResponse,
+  BulkUpdateRequest,
+  BulkUpdateResponse,
+  FindIdenticalRequest,
+  FindIdenticalResponse,
+  PreviewFilenameRequest,
+  PreviewFilenameResponse,
+  ExactLineMatchPreviewRequest,
+  ExactLineMatchPreviewResponse,
+  ExactLineMatchDeleteRequest,
+  ExactLineMatchDeleteResponse,
+  TransferExportOptionsResponse,
+  TransferCreateExportPackageRequest,
+  TransferImportPreviewRequest,
+  TransferImportPreviewResponse,
+  TransferImportApplyRequest,
+  TransferImportApplyResponse,
 } from './types';
 
 const BASE_URL = '/api';
@@ -552,8 +576,8 @@ export const api = {
     return request<FileGroupResponse[]>('GET', `/pairing-projects/${projectId}/groups${qs}`);
   },
 
-  suggestPairingPairs: (projectId: string) =>
-    request<PairSuggestionResponse[]>('POST', `/pairing-projects/${projectId}/suggest-pairs`),
+  suggestPairingPairs: (projectId: string, body?: SuggestPairsRequest) =>
+    request<PairSuggestionResponse[]>('POST', `/pairing-projects/${projectId}/suggest-pairs`, body),
 
   listPairingPairs: (projectId: string, status?: string) => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -565,6 +589,8 @@ export const api = {
     request<PairingProjectPair>('PATCH', `/pairing-projects/${projectId}/pairs/${pairId}`, data),
   deletePairingPair: (projectId: string, pairId: string) =>
     request<void>('DELETE', `/pairing-projects/${projectId}/pairs/${pairId}`),
+  clearPairingPairs: (projectId: string) =>
+    request<void>('DELETE', `/pairing-projects/${projectId}/pairs`),
   getPairingPairPreview: (projectId: string, pairId: string) =>
     request<PairPreviewResponse>('GET', `/pairing-projects/${projectId}/pairs/${pairId}/preview`),
 
@@ -575,10 +601,42 @@ export const api = {
     request<AlignmentResponse>('POST', `/pairing-projects/${projectId}/pairs/${pairId}/alignment`, data),
   previewPairingAlignment: (projectId: string, pairId: string, data: PreviewAlignmentRequest) =>
     request<AlignmentPreviewResponse>('POST', `/pairing-projects/${projectId}/pairs/${pairId}/alignment/preview`, data),
+  applyPairingAlignment: (projectId: string, pairId: string, data: ApplyAlignmentRequest) =>
+    request<ApplyAlignmentResponse>('POST', `/pairing-projects/${projectId}/pairs/${pairId}/alignment/apply`, data),
+
+  // File content save
+  savePairingFileContent: (projectId: string, fileId: string, content: string) =>
+    request<SavePairingFileContentResponse>('PUT', `/pairing-projects/${projectId}/files/${fileId}/content`, { content } as SavePairingFileContentRequest),
 
   // Learning
   learnFromPairingPairs: (projectId: string, data: LearnFromPairsRequest) =>
     request<LearnFromPairsResponse>('POST', `/pairing-projects/${projectId}/learn`, data),
+
+  // Bulk cleanup
+  bulkDeletePairs: (projectId: string, data: BulkDeleteRequest) =>
+    request<BulkDeleteResponse>('POST', `/pairing-projects/${projectId}/pairs/bulk-delete`, data),
+  bulkAcceptPairs: (projectId: string, data: BulkUpdateRequest) =>
+    request<BulkUpdateResponse>('POST', `/pairing-projects/${projectId}/pairs/bulk-accept`, data),
+  bulkRejectPairs: (projectId: string, data: BulkUpdateRequest) =>
+    request<BulkUpdateResponse>('POST', `/pairing-projects/${projectId}/pairs/bulk-reject`, data),
+  findIdenticalPairs: (projectId: string, data: FindIdenticalRequest) =>
+    request<FindIdenticalResponse>('POST', `/pairing-projects/${projectId}/pairs/find-identical`, data),
+  previewFilenamePairs: (projectId: string, data: PreviewFilenameRequest) =>
+    request<PreviewFilenameResponse>('POST', `/pairing-projects/${projectId}/pairs/preview-filename`, data),
+  exactLineMatchPreview: (projectId: string, data: ExactLineMatchPreviewRequest) =>
+    request<ExactLineMatchPreviewResponse>('POST', `/pairing-projects/${projectId}/pairs/exact-line-match/preview`, data),
+  exactLineMatchDelete: (projectId: string, data: ExactLineMatchDeleteRequest) =>
+    request<ExactLineMatchDeleteResponse>('POST', `/pairing-projects/${projectId}/pairs/exact-line-match/delete`, data),
+
+  // === Import / Export Transfer ===
+  getExportOptions: () =>
+    request<TransferExportOptionsResponse>('GET', '/transfer/export/options'),
+  createExportPackage: (data: TransferCreateExportPackageRequest) =>
+    request<Record<string, unknown>>('POST', '/transfer/export/package', data),
+  previewImport: (data: TransferImportPreviewRequest) =>
+    request<TransferImportPreviewResponse>('POST', '/transfer/import/preview', data),
+  applyImport: (data: TransferImportApplyRequest) =>
+    request<TransferImportApplyResponse>('POST', '/transfer/import/apply', data),
 };
 
 export { ApiError };

@@ -722,8 +722,20 @@ class JobExecutionService:
                 elif unit.translated_text:
                     status = TraceUnitStatus.TRANSLATED
                     translated_text = unit.translated_text
+
+                unit_id = unit.entry_id or unit.id or unit.key or ""
+                logger.debug(
+                    "trace unit update: job=%s unit_id=%r internal_status=%r "
+                    "has_text=%s trace_status=%s text_preview=%r error=%r",
+                    job_id, unit_id, unit.status,
+                    bool(unit.translated_text),
+                    status.value,
+                    (translated_text or "")[:200],
+                    (error_message or "")[:200],
+                )
+
                 entry = TraceUnitEntry(
-                    unit_id=unit.entry_id or unit.id or unit.key or "",
+                    unit_id=unit_id,
                     job_id=job_id,
                     file_path=unit.file_path or "",
                     key=unit.key or "",

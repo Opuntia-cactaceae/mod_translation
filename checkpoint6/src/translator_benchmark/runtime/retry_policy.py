@@ -8,22 +8,52 @@ def classify_error(exception: Exception) -> str:
         exception: Exception object.
 
     Returns:
-        Error type: "rate_limit", "billing", "timeout", "network", "unknown".
+        Error type: "rate_limit", "auth", "billing", "timeout",
+                    "dns", "tls", "connection", "network", "unknown".
     """
     status_code = getattr(exception, "status_code", None)
     if status_code == 429:
         return "rate_limit"
-    if status_code in (401, 402, 403):
+    if status_code == 401:
+        return "auth"
+    if status_code in (402, 403):
         return "billing"
 
     name = type(exception).__name__.lower()
-    if name in {"apitimeouterror", "timeout", "readtimeouterror", "connecttimeouterror"}:
+
+    # Timeout errors
+    if name in {"apitimeouterror", "timeout", "readtimeouterror",
+                "connecttimeouterror", "writetimeouterror"}:
         return "timeout"
     if isinstance(exception, TimeoutError):
         return "timeout"
 
-    if "connection" in name or "socket" in name or "network" in name:
+    # DNS resolution errors
+    if "dns" in name or "resolve" in name or "gai" in name:
+        return "dns"
+
+    # TLS/SSL errors
+    if "tls" in name or "ssl" in name or "certificate" in name:
+        return "tls"
+
+    # Connection refused / reset errors
+    # (ConnectionError, ConnectionRefusedError, ConnectionResetError)
+    if name in {"connectionerror", "connectionrefusederror",
+                "connectionreseterror", "brokenpipeerror"}:
+        return "connection"
+
+    # Generic network errors
+    if "socket" in name or "network" in name:
         return "network"
+
+    # httpx / urllib3 transport errors — check message for hints
+    msg = str(exception).lower()
+    if any(kw in msg for kw in ("dns", "name resolution", "getaddrinfo")):
+        return "dns"
+    if any(kw in msg for kw in ("tls", "ssl", "certificate")):
+        return "tls"
+    if any(kw in msg for kw in ("refused", "reset by peer", "connection aborted")):
+        return "connection"
 
     return "unknown"
 
@@ -78,7 +108,7 @@ def should_retry(error_type: str, attempt_number: int, max_retries: int) -> bool
     """
     if attempt_number >= max_retries:
         return False
-    retryable_errors = {"rate_limit", "timeout", "network", "unknown"}
+    retryable_errors = {"rate_limit", "timeout", "dns", "tls", "connection", "network", "unknown"}
     return error_type in retryable_errors
 
 

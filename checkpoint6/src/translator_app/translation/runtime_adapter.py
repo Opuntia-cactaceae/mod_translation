@@ -187,7 +187,7 @@ class RealRuntime:
                 if result is None:
                     raise RuntimeError("Runtime returned None")
 
-                if result.success and result.raw_text:
+                if result.success and result.raw_text is not None:
                     raw_response = result.raw_text
                     # --- Trace: runtime_response_received ---
                     if self._trace is not None:
@@ -209,6 +209,16 @@ class RealRuntime:
                         )
 
                     parsed = self._parse_batch_response(raw_response, len(texts))
+                    logger.debug(
+                        "batch response parsed: provider=%s model=%s "
+                        "expected=%d got=%d raw_len=%d preview=%r",
+                        self._config.runtime.provider,
+                        self._config.runtime.model,
+                        len(texts),
+                        len(parsed),
+                        len(raw_response),
+                        raw_response[:300],
+                    )
                     self._emit_runtime_event("runtime_call_finished", "batch", attempt)
                     return parsed, raw_response
 

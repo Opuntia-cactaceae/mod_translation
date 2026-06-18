@@ -66,9 +66,7 @@ export default function BatchUnitsModal({
               </div>
             )}
           </div>
-          <button className="btn btn-sm" onClick={onClose}>
-            &times;
-          </button>
+          <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
         </div>
         <div className="modal-body" style={{ minHeight: '100px', fontSize: '0.85rem' }}>
           {loading && (

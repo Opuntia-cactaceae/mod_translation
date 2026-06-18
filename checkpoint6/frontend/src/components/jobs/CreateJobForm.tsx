@@ -354,6 +354,7 @@ export default function CreateJobForm({
                   }}>
                     <input
                       type="checkbox"
+                      className="form-checkbox"
                       checked={vm.selectedModPaths.includes(m.path)}
                       onChange={() => {
                         if (vm.selectedModPaths.includes(m.path)) {
@@ -622,6 +623,7 @@ export default function CreateJobForm({
                 >
                   <input
                     type="checkbox"
+                    className="form-checkbox"
                     checked={isChecked}
                     onChange={() => {
                       const newIds = isChecked
@@ -716,6 +718,7 @@ export default function CreateJobForm({
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
             <input
               type="checkbox"
+              className="form-checkbox"
               checked={vm.form.useCache}
               onChange={e => vm.setFormField('useCache', e.target.checked)}
             />
@@ -726,6 +729,7 @@ export default function CreateJobForm({
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
             <input
               type="checkbox"
+              className="form-checkbox"
               checked={vm.form.saveRawResponses}
               onChange={e => vm.setFormField('saveRawResponses', e.target.checked)}
             />
@@ -766,6 +770,7 @@ export default function CreateJobForm({
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem' }}>
               <input
                 type="checkbox"
+                className="form-checkbox"
                 checked={vm.form.promptOverrideEnabled}
                 onChange={e => {
                   vm.setFormField('promptOverrideEnabled', e.target.checked);
@@ -796,9 +801,10 @@ export default function CreateJobForm({
               <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
                 Mode:
                 <select
+                  className="form-control"
                   value={vm.previewPromptMode}
                   onChange={e => vm.setPreviewPromptMode(e.target.value as 'batch' | 'single')}
-                  style={{ marginLeft: '0.3rem', fontSize: '0.7rem', padding: '0.1rem 0.2rem' }}
+                  style={{ width: 'auto', marginLeft: '0.3rem', fontSize: '0.7rem', padding: '0.1rem 0.2rem' }}
                 >
                   <option value="batch">Batch</option>
                   <option value="single">Single</option>
@@ -810,7 +816,7 @@ export default function CreateJobForm({
           {/* Effective prompt templates (read-only, shown when override is OFF) */}
           {!vm.form.promptOverrideEnabled && vm.effectivePrompt && (
             <div style={{ padding: '0.4rem', marginBottom: '0.5rem', background: 'var(--color-surface-1)', borderRadius: 'var(--radius)', opacity: 0.85 }}>
-              <div style={{ fontSize: '0.7rem', fontWeight: 600, marginBottom: '0.3rem', color: 'var(--color-text-muted)' }}>
+              <div className="subsection-title-muted">
                 Effective prompt templates (read-only)
                 {vm.effectivePrompt.source && (
                   <span style={{ marginLeft: '0.4rem', fontWeight: 400, fontStyle: 'italic' }}>
@@ -823,19 +829,19 @@ export default function CreateJobForm({
                   {vm.effectivePrompt.warnings.join('; ')}
                 </div>
               )}
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, marginBottom: '0.2rem' }}>Batch System Prompt</div>
+              <div className="subsection-title">Batch System Prompt</div>
               <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem', background: 'var(--color-surface-2)', borderRadius: '3px', marginBottom: '0.3rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '60px', overflowY: 'auto', fontFamily: 'monospace' }}>
                 {vm.effectivePrompt.batch_system_prompt || <em style={{ color: 'var(--color-text-muted)' }}>empty</em>}
               </div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, marginBottom: '0.2rem' }}>Batch User Template</div>
+              <div className="subsection-title">Batch User Template</div>
               <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem', background: 'var(--color-surface-2)', borderRadius: '3px', marginBottom: '0.3rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '60px', overflowY: 'auto', fontFamily: 'monospace' }}>
                 {vm.effectivePrompt.batch_user_template || <em style={{ color: 'var(--color-text-muted)' }}>empty</em>}
               </div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, marginBottom: '0.2rem' }}>Single System Prompt</div>
+              <div className="subsection-title">Single System Prompt</div>
               <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem', background: 'var(--color-surface-2)', borderRadius: '3px', marginBottom: '0.3rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '60px', overflowY: 'auto', fontFamily: 'monospace' }}>
                 {vm.effectivePrompt.single_system_prompt || <em style={{ color: 'var(--color-text-muted)' }}>empty</em>}
               </div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, marginBottom: '0.2rem' }}>Single User Template</div>
+              <div className="subsection-title">Single User Template</div>
               <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem', background: 'var(--color-surface-2)', borderRadius: '3px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '60px', overflowY: 'auto', fontFamily: 'monospace' }}>
                 {vm.effectivePrompt.single_user_template || <em style={{ color: 'var(--color-text-muted)' }}>empty</em>}
               </div>
@@ -844,7 +850,7 @@ export default function CreateJobForm({
 
           {vm.form.promptOverrideEnabled && (
             <div style={{ padding: '0.4rem', marginBottom: '0.5rem', background: 'var(--color-surface-1)', borderRadius: 'var(--radius)' }}>
-              <div style={{ fontSize: '0.7rem', fontWeight: 600, marginBottom: '0.3rem' }}>Batch Templates</div>
+              <div className="subsection-title">Batch Templates</div>
               <div className="form-group">
                 <label>Batch System Prompt</label>
                 <input
@@ -867,7 +873,7 @@ export default function CreateJobForm({
                 Placeholders: {`{texts}`}, {`{src_lang}`}, {`{dst_lang}`}, {`{src_lang_code}`}, {`{dst_lang_code}`}
               </div>
 
-              <div style={{ fontSize: '0.7rem', fontWeight: 600, marginBottom: '0.3rem' }}>Single Templates</div>
+              <div className="subsection-title">Single Templates</div>
               <div className="form-group">
                 <label>Single System Prompt</label>
                 <input
@@ -894,6 +900,7 @@ export default function CreateJobForm({
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.75rem' }}>
                   <input
                     type="checkbox"
+                    className="form-checkbox"
                     checked={vm.form.logPrompts}
                     onChange={e => vm.setFormField('logPrompts', e.target.checked)}
                   />
@@ -960,6 +967,7 @@ export default function CreateJobForm({
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem' }}>
                 <input
                   type="checkbox"
+                  className="form-checkbox"
                   checked={vm.form.outputPreserveRelativePath}
                   onChange={e => vm.setFormField('outputPreserveRelativePath', e.target.checked)}
                 />
@@ -970,6 +978,7 @@ export default function CreateJobForm({
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem' }}>
                 <input
                   type="checkbox"
+                  className="form-checkbox"
                   checked={vm.form.outputOverwrite}
                   onChange={e => vm.setFormField('outputOverwrite', e.target.checked)}
                 />
@@ -980,6 +989,7 @@ export default function CreateJobForm({
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem' }}>
                 <input
                   type="checkbox"
+                  className="form-checkbox"
                   checked={vm.form.outputBackup}
                   onChange={e => vm.setFormField('outputBackup', e.target.checked)}
                 />
@@ -1149,7 +1159,7 @@ export default function CreateJobForm({
                   ? 'Apply translation profile?'
                   : 'Clear selected profile?'}
               </span>
-              <button className="btn btn-sm" onClick={vm.cancelProfileConfirm}>&times;</button>
+              <button className="modal-close" onClick={vm.cancelProfileConfirm} aria-label="Close">&times;</button>
             </div>
             <div className="modal-body" style={{ minHeight: 'auto', fontSize: '0.85rem' }}>
               {vm.profileConfirmType === 'apply' ? (
@@ -1180,7 +1190,7 @@ export default function CreateJobForm({
           <div className="modal-content" style={{ width: '600px' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span>Prompt Preview ({vm.previewPromptMode})</span>
-              <button className="btn btn-sm" onClick={vm.closePreviewPrompt}>&times;</button>
+              <button className="modal-close" onClick={vm.closePreviewPrompt} aria-label="Close">&times;</button>
             </div>
             <div className="modal-body" style={{ minHeight: 'auto', fontSize: '0.8rem' }}>
               {vm.previewPromptData.errors.length > 0 && (

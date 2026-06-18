@@ -110,6 +110,7 @@ function Field({
           <input
             id={id}
             type="checkbox"
+            className="form-checkbox"
             checked={!!value}
             disabled={readOnly}
             onChange={e => onChange?.(String(e.target.checked))}
@@ -192,7 +193,7 @@ export default function ProfileFormSections({
       const game = gameOptions.find(g => g.id === form.game);
       return game ? game.file_handlers.includes(h.id) : true;
     })
-    .map(h => ({ value: h.id, label: `${h.label} (${h.extensions.join(', ')})` }));
+    .map(h => ({ value: h.id, label: `${h.label} (${h.extensions.length})` }));
 
   const providerOpts = (translationOptions?.providers ?? []).map(p => ({ value: p, label: p }));
   const promptOpts = (translationOptions?.prompt_profiles ?? []).map(p => ({ value: p, label: p }));
@@ -226,6 +227,18 @@ export default function ProfileFormSections({
           type="select"
           options={handlerOpts}
         />
+        {/* Extension badges for the selected handler */}
+        {(() => {
+          const h = fileHandlers.find(fh => fh.id === form.fileHandler);
+          if (!h || h.extensions.length === 0) return null;
+          return (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.2rem', marginBottom: '0.4rem' }}>
+              {h.extensions.map(ext => (
+                <span key={ext} className="badge badge-muted" style={{ textTransform: 'none', fontSize: '0.6rem' }}>{ext}</span>
+              ))}
+            </div>
+          );
+        })()}
       </Section>
 
       {/* Languages */}
@@ -288,7 +301,7 @@ export default function ProfileFormSections({
 
         {/* Batch prompt templates */}
         <div style={{ marginTop: '0.5rem', padding: '0.4rem', background: 'var(--color-surface-1)', borderRadius: 'var(--radius)' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, marginBottom: '0.3rem' }}>Batch Prompt</div>
+          <div className="subsection-title-muted">Batch Prompt</div>
           <Field
             label="Batch System Prompt"
             value={form.batchSystemPrompt}
@@ -312,7 +325,7 @@ export default function ProfileFormSections({
 
         {/* Single prompt templates */}
         <div style={{ marginTop: '0.3rem', padding: '0.4rem', background: 'var(--color-surface-1)', borderRadius: 'var(--radius)' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, marginBottom: '0.3rem' }}>Single Prompt</div>
+          <div className="subsection-title-muted">Single Prompt</div>
           <Field
             label="Single System Prompt"
             value={form.singleSystemPrompt}
@@ -337,7 +350,7 @@ export default function ProfileFormSections({
         {/* Effective prompt notice — profile references preset but templates are empty (TASK 5) */}
         {form.promptProfileName && !form.batchSystemPrompt && !form.batchUserTemplate && !form.singleSystemPrompt && !form.singleUserTemplate && effectivePrompt && (
           <div style={{ marginTop: '0.3rem', padding: '0.4rem', background: 'var(--color-surface-2)', borderRadius: 'var(--radius)', border: '1px solid var(--color-border)' }}>
-            <div style={{ fontSize: '0.65rem', fontWeight: 600, marginBottom: '0.3rem', color: 'var(--color-text-muted)' }}>
+            <div className="subsection-title-muted">
               Using preset templates from &ldquo;{form.promptProfileName}&rdquo; (read-only preview)
             </div>
             <ReadOnlyField label="Batch System Prompt" value={effectivePrompt.batch_system_prompt || '—'} mono />

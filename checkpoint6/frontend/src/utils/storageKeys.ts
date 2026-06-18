@@ -48,6 +48,7 @@ export const STORAGE_KEYS = {
   pairingSelectedFiles: 'stellaris_translator.pairing.selectedFiles',
   pairingIncludeFilter: 'stellaris_translator.pairing.includeFilter',
   pairingExcludeFilter: 'stellaris_translator.pairing.excludeFilter',
+  pairingExtensionFilter: 'stellaris_translator.pairing.extensionFilter',
 } as const;
 
 /**

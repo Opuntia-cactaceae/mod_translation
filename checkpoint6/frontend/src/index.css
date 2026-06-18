@@ -20,6 +20,7 @@
   --color-error: #f87171;
   --color-info: #60a5fa;
   --radius: 6px;
+  --radius-sm: 4px;
   --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 
   /* Diagnostics dark-theme backgrounds */
@@ -28,6 +29,7 @@
   --color-info-bg: rgba(96, 165, 250, 0.08);
   --color-highlight-bg: rgba(251, 191, 36, 0.12);
   --color-bg-subtle: #1e2538;
+  --scrollbar-track-color: #1e2538;
 }
 
 body {
@@ -40,6 +42,67 @@ body {
 
 #root {
   min-height: 100vh;
+}
+
+/* ── Unified scrollbar styling (applies everywhere) ──                  */
+/*                                                                       */
+/*  On macOS/Chromium, `transparent` track backgrounds still reveal the  */
+/*  OS classic scrollbar gutter (white/light-gray). Instead, paint the   */
+/*  track with the app surface color so the gutter matches the panel.    */
+/*                                                                       */
+/*  Variable: --scrollbar-track-color (#1e2538 = color-bg-subtle)        */
+/*                                                                       */
+/*  Firefox:      scrollbar-width + scrollbar-color                      */
+/*  WebKit:       all ::-webkit-scrollbar sub-pseudo-elements            */
+/*  ──────────────────────────────────────────────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 146, 165, 0.35) var(--scrollbar-track-color);
+}
+
+/* --- Outermost scrollbar layer --- */
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+  background: var(--scrollbar-track-color);
+}
+
+/* --- Track groove --- */
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track-color);
+}
+
+/* --- Track-piece — the visible gutter (painted with surface color) --- */
+*::-webkit-scrollbar-track-piece {
+  background: var(--scrollbar-track-color);
+}
+
+/* --- Thumb: compact pill-shaped draggable handle --- */
+*::-webkit-scrollbar-thumb {
+  background: rgba(139, 146, 165, 0.35);
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 146, 165, 0.55);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(139, 146, 165, 0.75);
+}
+
+/* --- Buttons: hide arrow buttons at track ends --- */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* --- Corner: intersection of h + v scrollbars --- */
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track-color);
 }
 
 a {
@@ -187,6 +250,46 @@ input, textarea, select {
   gap: 1rem;
 }
 
+/* Panel — lightweight layout container (no border/shadow, just background) */
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.panel-body {
+  flex: 1;
+  padding: 0.75rem;
+  min-width: 0;
+}
+
+.panel-body-empty {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.panel-body-loading {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -237,6 +340,39 @@ input, textarea, select {
   color: #fff;
 }
 
+/* ── Secondary button (outline-subtle variant for non-primary actions) ── */
+.btn-secondary {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.btn-secondary:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+/* ── Outline button (low-prominence border button) ── */
+.btn-outline {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.btn-outline:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+/* ── Outline danger button ── */
+.btn-outline-danger {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.btn-outline-danger:hover {
+  background: var(--color-error);
+  color: #fff;
+}
+
 .btn-sm {
   padding: 0.3rem 0.6rem;
   font-size: 0.75rem;
@@ -259,6 +395,29 @@ input, textarea, select {
 .btn-added:hover {
   opacity: 0.85;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+/* ── Ghost button (transparent, borderless, muted — minimal footprint) ── */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-muted);
+}
+
+.btn-ghost:hover {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+/* ── Unstyled button — removes all button chrome, keeps semantic <button> ── */
+.btn-unstyled {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 
 /* Floating job-draft bar (sticky at bottom of page) */
@@ -325,7 +484,73 @@ textarea.form-control {
 }
 
 select.form-control {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
   cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6' fill='%238b92a5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 0.65rem;
+  padding-right: 1.8rem;
+}
+
+select.form-control:hover {
+  border-color: var(--color-text-muted);
+}
+
+/* ── Custom dark-theme checkbox ── */
+.form-checkbox {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.form-checkbox:hover {
+  border-color: var(--color-text-muted);
+}
+
+.form-checkbox:checked {
+  background: var(--color-primary) url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z' fill='%23fff'/%3E%3C/svg%3E") center/12px no-repeat;
+  border-color: var(--color-primary);
+}
+
+.form-checkbox:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* ── Empty state (centered muted placeholder for lists with no data) ── */
+.empty-state {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.form-control.is-invalid {
+  border-color: var(--color-error);
+}
+
+.form-control.is-invalid:focus {
+  border-color: var(--color-error);
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.2);
+}
+
+.field-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--color-error);
+  line-height: 1.3;
 }
 
 .form-row {
@@ -347,9 +572,21 @@ select.form-control {
 .mod-discovery-actions {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+
+/* Compact button group inside the discovery section.
+   Prevents buttons from stretching full card width. */
+.stellaris-discovery-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-self: flex-start;
+}
+
+.stellaris-discovery-action-button {
+  /* Buttons fill the wrapper width via default column flex stretch */
 }
 
 /* Tables */
@@ -522,8 +759,6 @@ tr.row-non-editable td input {
   line-height: 1.5;
   max-height: 60vh;
   background: #0d1117;
-  scrollbar-color: var(--color-border) transparent;
-  scrollbar-width: thin;
 }
 
 .code-row {
@@ -562,65 +797,19 @@ tr.row-non-editable td input {
   overflow-y: auto;
   max-height: calc(100vh - 280px);
 }
-.editor-scroll-container::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.editor-scroll-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-.editor-scroll-container::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-.editor-scroll-container::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
-}
 
-/* ── Pairing File Workspace tree viewport scrollbars ── */
-.pw-tree-viewport {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
-.pw-tree-viewport::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.pw-tree-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.pw-tree-viewport::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-.pw-tree-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
-}
-.pw-tree-viewport::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-/* ── Pairing Workspace pair list viewport scrollbars ── */
+/* ── Pairing workspace scroll-viewport backgrounds ──                */
+/*                                                                */
+/*  macOS/Chromium can show the OS classic white gutter through   */
+/*  ::-webkit-scrollbar pseudo-elements. The only robust fix is   */
+/*  to paint the scroll container's OWN background so the         */
+/*  reserved gutter slot inherits the intended dark color.        */
+/*  scrollbar-gutter: stable ensures space is always reserved.    */
+/*                               */
+.pw-tree-viewport,
 .pw-pair-list-viewport {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
-.pw-pair-list-viewport::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.pw-pair-list-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.pw-pair-list-viewport::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-.pw-pair-list-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
-}
-.pw-pair-list-viewport::-webkit-scrollbar-corner {
-  background: transparent;
+  background: var(--scrollbar-track-color);
+  scrollbar-gutter: stable;
 }
 
 /* Board drag-over visual state */
@@ -655,21 +844,6 @@ tr.row-non-editable td input {
 .badge-info { background: rgba(96, 165, 250, 0.15); color: var(--color-info); }
 .badge-muted { background: rgba(139, 146, 165, 0.15); color: var(--color-text-muted); }
 
-/* Custom scrollbar (dark) */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Diagnostics UI — dark-theme diagnostic items                       */
@@ -921,15 +1095,19 @@ tr.row-non-editable td input {
   overflow-y: auto;
 }
 
-/* Inline sections */
-.section {
-  margin-bottom: 1.5rem;
+/* Sub-section label — compact semibold heading for card sub-sections */
+.subsection-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.35rem;
 }
 
-.section-title {
-  font-size: 0.9rem;
+.subsection-title-muted {
+  font-size: 0.72rem;
   font-weight: 600;
-  margin-bottom: 0.5rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.35rem;
 }
 
 /* Secrets list */
@@ -1052,6 +1230,7 @@ tr.row-non-editable td input {
   flex-direction: column;
   gap: 0.35rem;
   margin-top: 0.4rem;
+  background: var(--color-surface);
 }
 
 .loc-group-item {
@@ -1661,9 +1840,28 @@ tr.row-non-editable td input {
   border: none;
   font-size: 1.25rem;
   cursor: pointer;
-  color: var(--color-text, inherit);
+  color: var(--color-text-muted);
   padding: 0 0.25rem;
   line-height: 1;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.modal-close:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+/* Legacy alias: .modal behaves like .modal-content */
+.modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1814,6 +2012,23 @@ tr.row-non-editable td input {
   padding-left: 2.5rem;
   color: var(--color-text-muted);
   font-size: 0.75rem;
+}
+
+/* Toggle button for file-tree group collapse/expand */
+.tree-collapse-toggle {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.7rem;
+  border-radius: 3px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tree-collapse-toggle:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
 }
 
 /* Job-scoped source node */
@@ -2285,7 +2500,7 @@ tr.selected-row:hover {
 
 .pair-slot-card__slots {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr auto 1fr;
   gap: 0;
 }
 
@@ -2443,13 +2658,13 @@ tr.selected-row:hover {
 /* ================================================================== */
 
 .pw-bottom-panel {
-  flex: 1;
   overflow: hidden;
   border-top: 1px solid var(--color-border, #2a2f3e);
   background: var(--color-bg, #0f1419);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100%;
 }
 
 .pw-bottom-editor {
@@ -2523,8 +2738,20 @@ tr.selected-row:hover {
 
 .pw-bottom-editor__body {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   min-height: 0;
+  position: relative;
+}
+
+/* Tab panels: all mounted simultaneously, inactive ones hidden via [hidden] */
+.pw-bottom-editor__tab-panel {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pw-bottom-editor__tab-panel[hidden] {
+  display: none;
 }
 
 /* Ensure preview-panel inside bottom editor fills available space */
@@ -2587,5 +2814,784 @@ tr.selected-row:hover {
   0%   { background: color-mix(in srgb, var(--color-accent, #60a5fa) 25%, transparent); }
   50%  { background: color-mix(in srgb, var(--color-accent, #60a5fa) 15%, transparent); }
   100% { background: transparent; }
+}
+
+/* ================================================================== */
+/*  Pairing Projects — normal document flow (not fixed viewport)        */
+/* ================================================================== */
+
+.pairing-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: calc(100vh - 60px);
+  overflow: visible;
+}
+
+/* --- Row 1: page header --- */
+.pairing-page__header {
+  /* inherits from .page-header */
+  flex-shrink: 0;
+}
+
+/* --- Row 2: project shelf — flows naturally, no max-height --- */
+.pairing-page__project-shelf {
+  overflow: visible;
+}
+
+/* --- Row 3: workspace — block, not flex child constrained by 1fr --- */
+.pairing-page__workspace {
+  display: block;
+  overflow: visible;
+}
+
+/* ---- Workspace shell: normal flow, NO internal scroll ---- */
+.pairing-workspace-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: auto;
+  overflow: visible;
+}
+
+.pairing-workspace-shell--with-bottom {
+  /* gap between top and bottom sections handled by the shell gap */
+}
+
+/* --- Settings form block --- */
+.pairing-workspace-settings {
+  /* compact form, auto height in normal flow */
+}
+
+/* --- Workspace header block (meta + actions) --- */
+.pairing-workspace-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  clear: both;
+}
+
+/* Action buttons row */
+.pw-workspace-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Workspace meta row — Root, Last scanned, Status */
+.pw-workspace-meta {
+  position: static;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pw-workspace-meta__item {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pw-workspace-meta__item--root {
+  flex: 1 1 320px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pw-workspace-meta__root-path {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* --- Top area — FILES / PAIR BOARD: dedicated pixel height --- */
+.pairing-workspace-top {
+  position: relative;
+  height: clamp(820px, 90vh, 1200px);
+  min-height: 520px;
+  overflow: hidden;
+}
+
+/* --- Bottom workspace — separate section, also fixed height --- */
+.pairing-workspace-bottom {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: clamp(520px, 65vh, 820px);
+  min-height: 520px;
+  overflow: hidden;
+  border-top: 1px solid var(--color-border, #2a2f3e);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Resize handles for pairing workspace sections                       */
+/* ------------------------------------------------------------------ */
+
+/* Paired with .card, needed so absolute resize handle positions inside  */
+.pw-files-card {
+  position: relative;
+}
+
+.pairing-workspace-resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 22px;
+  height: 22px;
+  z-index: 20;
+  cursor: ns-resize;
+  border-radius: 4px;
+  opacity: 0.75;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) bottom right / 7px 7px no-repeat,
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) 7px 7px / 7px 7px no-repeat;
+}
+
+.pairing-workspace-resize-handle:hover {
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
+}
+
+body.is-resizing-vertical {
+  cursor: ns-resize;
+  user-select: none;
+}
+
+/* PairWorkspaceLayout — fills 100% of the clamped top/bottom area */
+.pair-workspace-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pair-workspace-layout__top {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1rem;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.pair-workspace-layout__column {
+  overflow: hidden;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  ProjectSettingsForm — compact inline form                          */
+/* ------------------------------------------------------------------ */
+
+.project-settings-form {
+  padding: 0.75rem;
+  background: var(--color-surface-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+}
+
+.project-settings-form__title {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+}
+
+.project-settings-form__grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.32fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.project-settings-form__field {
+  min-width: 0;
+}
+
+.project-settings-form__field label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.project-settings-form__notes {
+  margin-top: 0.6rem;
+}
+
+.project-settings-form__notes textarea {
+  min-height: 56px;
+  max-height: 80px;
+  resize: vertical;
+}
+
+.project-settings-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .project-settings-form__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ================================================================== */
+/*  Pair File View — editable side-by-side file editor (Stage 3)        */
+/* ================================================================== */
+
+.pair-file-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* Resizable wrapper around the two-column grid — hosts the resize handle */
+.pair-file-view__columns-container {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pair-file-view__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pair-file-view__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface-2);
+}
+
+.pair-file-view__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.pair-file-view__header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.pair-file-view__title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pair-file-view__path {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pair-file-view__status {
+  font-size: 0.65rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pair-file-view__status--dirty {
+  background: var(--color-warning-bg, #fbbf2433);
+  color: var(--color-warning, #fbbf24);
+}
+
+.pair-file-view__status--saved {
+  background: var(--color-success-bg, #22c55e33);
+  color: var(--color-success, #22c55e);
+}
+
+.pair-file-view__status--missing {
+  background: var(--color-error-bg, #ef444433);
+  color: var(--color-error, #ef4444);
+}
+
+.pair-file-view__textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  border: none;
+  outline: none;
+  resize: none;
+  background: #0d1117;
+  color: var(--color-text);
+  tab-size: 2;
+  overflow-y: auto;
+}
+
+.pair-file-view__textarea:focus {
+  background: #111822;
+  box-shadow: inset 0 0 0 1px var(--color-primary, #3b82f6);
+}
+
+.pair-file-view__actions {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.pair-file-view__missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 2rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  opacity: 0.6;
+}
+
+/* Reveal info chip — shown when navigating from Line Editor */
+.pair-file-view__reveal-info {
+  font-size: 0.68rem;
+  color: var(--color-info, #60a5fa);
+  background: rgba(96, 165, 250, 0.1);
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: auto;
+}
+
+/* Bottom-right resize grip — matches pair-line-editor__row-resize-handle pattern */
+.pair-file-view__resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 20px;
+  height: 20px;
+  z-index: 10;
+  cursor: ns-resize;
+  opacity: 0.55;
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) bottom right / 7px 7px no-repeat,
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) 7px 7px / 7px 7px no-repeat;
+}
+
+.pair-file-view__resize-handle:hover {
+  opacity: 1;
+}
+
+@media (max-width: 900px) {
+  .pair-file-view__columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ================================================================== */
+/*  Normalization Section — collapsible embedded in File View           */
+/* ================================================================== */
+
+.normalization-section {
+  margin-top: 0.75rem;
+}
+
+.normalization-section__header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: border-color 0.15s ease;
+}
+
+.normalization-section__header:hover {
+  border-color: var(--color-primary);
+}
+
+.normalization-section__chevron {
+  color: var(--color-text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.normalization-section__header[aria-expanded="true"] .normalization-section__chevron {
+  transform: rotate(90deg);
+}
+
+.normalization-section__last-applied {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.normalization-section__body {
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 0.85rem;
+  background: var(--color-surface);
+}
+
+/* ================================================================== */
+/*  Pair Line Editor — line-by-line SOURCE ↔ TRANSLATION editor         */
+/* ================================================================== */
+
+.pair-line-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Toolbar row: stats on left, filters + actions on right */
+.pair-line-editor__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.pair-line-editor__stats {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.pair-line-editor__stat {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.pair-line-editor__stat-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.pair-line-editor__stat-label {
+  opacity: 0.8;
+}
+
+.pair-line-editor__toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.pair-line-editor__filters {
+  display: flex;
+  gap: 0.2rem;
+}
+
+.pair-line-editor__filter-btn {
+  font-size: 0.68rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.pair-line-editor__filter-btn:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.pair-line-editor__filter-btn--active {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.pair-line-editor__filter-btn--active:hover {
+  background: var(--color-primary-hover);
+}
+
+/* Column headers */
+.pair-line-editor__headers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.pair-line-editor__header-cell {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+}
+
+.pair-line-editor__header-cell:last-child {
+  border-right: none;
+}
+
+/* Scrollable body */
+.pair-line-editor__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Row */
+.pair-line-editor__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--color-border);
+  position: relative;
+  min-height: 72px;
+}
+
+.pair-line-editor__row:last-child {
+  border-bottom: none;
+}
+
+.pair-line-editor__row--dirty {
+  background: rgba(251, 191, 36, 0.04);
+  outline: 1px solid rgba(251, 191, 36, 0.2);
+  outline-offset: -1px;
+}
+
+.pair-line-editor__row--source-only {
+  background: rgba(248, 113, 113, 0.04);
+}
+
+.pair-line-editor__row--translated-only {
+  background: rgba(96, 165, 250, 0.04);
+}
+
+/* Cell */
+.pair-line-editor__cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.pair-line-editor__cell:last-child {
+  border-right: none;
+}
+
+/* Line number indicator */
+.pair-line-editor__cell-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.6rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  opacity: 0.5;
+  background: rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.pair-line-editor__cell-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pair-line-editor__open-btn {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: 0.55rem;
+  padding: 0;
+  text-decoration: underline;
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.pair-line-editor__open-btn:hover {
+  opacity: 1;
+}
+
+.pair-line-editor__state-badge {
+  font-size: 0.55rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+}
+
+.pair-line-editor__state-badge--matched {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--color-success);
+}
+
+.pair-line-editor__state-badge--source-only {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--color-error);
+}
+
+.pair-line-editor__state-badge--translated-only {
+  background: rgba(96, 165, 250, 0.15);
+  color: var(--color-info);
+}
+
+.pair-line-editor__state-badge--empty {
+  background: rgba(139, 146, 165, 0.15);
+  color: var(--color-text-muted);
+}
+
+/* Source: read-only text */
+.pair-line-editor__source-text {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  color: var(--color-text);
+  min-height: 2em;
+}
+
+/* Translation: editable input */
+.pair-line-editor__translation-input {
+  flex: 1;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--color-text);
+  tab-size: 2;
+  min-height: 2em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: hidden;
+}
+
+.pair-line-editor__translation-input:focus {
+  background: rgba(79, 140, 255, 0.06);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+
+.pair-line-editor__translation-input--dirty {
+  background: rgba(251, 191, 36, 0.06);
+}
+
+/* Row resize handle */
+.pair-line-editor__row-resize-handle {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 18px;
+  height: 18px;
+  z-index: 10;
+  cursor: ns-resize;
+  opacity: 0.55;
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) bottom right / 6px 6px no-repeat,
+    linear-gradient(135deg, transparent 50%, var(--color-text-muted) 50%) 6px 6px / 6px 6px no-repeat;
+}
+
+.pair-line-editor__row-resize-handle:hover {
+  opacity: 1;
+}
+
+/* Actions row */
+.pair-line-editor__actions {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* Empty state */
+.pair-line-editor__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 2rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  opacity: 0.6;
 }
 

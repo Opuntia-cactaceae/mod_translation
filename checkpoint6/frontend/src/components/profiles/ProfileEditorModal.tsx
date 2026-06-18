@@ -23,50 +23,11 @@ export interface ProfileEditorModalProps {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Modal overlay styles                                               */
+/*  Modal overlay styles (using global CSS classes)                     */
 /* ------------------------------------------------------------------ */
-const OVERLAY_STYLE: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'rgba(0,0,0,0.5)',
-  zIndex: 1000,
-};
 
-const MODAL_STYLE: React.CSSProperties = {
-  background: 'var(--color-surface)',
-  borderRadius: 'var(--radius)',
+const MODAL_WIDTH_STYLE: React.CSSProperties = {
   width: '560px',
-  maxWidth: '95vw',
-  maxHeight: '90vh',
-  display: 'flex',
-  flexDirection: 'column',
-  boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-};
-
-const HEADER_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '0.75rem 1rem',
-  borderBottom: '1px solid var(--color-border)',
-};
-
-const BODY_STYLE: React.CSSProperties = {
-  flex: 1,
-  overflowY: 'auto',
-  padding: '0.75rem 1rem',
-};
-
-const FOOTER_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'flex-end',
-  gap: '0.5rem',
-  padding: '0.75rem 1rem',
-  borderTop: '1px solid var(--color-border)',
 };
 
 /* ------------------------------------------------------------------ */
@@ -257,10 +218,10 @@ export default function ProfileEditorModal({
   const canSave = effectiveMode !== 'view' && !saving && combinedValid && form.name.trim().length > 0 && isDirty;
 
   return (
-    <div style={OVERLAY_STYLE} onPointerDown={handleOverlayPointerDown} onClick={handleOverlayClick}>
-      <div style={MODAL_STYLE}>
+    <div className="modal-overlay" onPointerDown={handleOverlayPointerDown} onClick={handleOverlayClick}>
+      <div className="modal-content" style={MODAL_WIDTH_STYLE}>
         {/* Header */}
-        <div style={HEADER_STYLE}>
+        <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>{modeLabel}</span>
             {domainProfile && isReadonlyProfile(domainProfile) && (
@@ -269,13 +230,11 @@ export default function ProfileEditorModal({
               </span>
             )}
           </div>
-          <button className="btn btn-sm" onClick={handleClose} type="button" style={{ fontSize: '0.7rem' }}>
-            &times;
-          </button>
+          <button className="modal-close" onClick={handleClose} type="button" aria-label="Close">&times;</button>
         </div>
 
         {/* Body */}
-        <div style={BODY_STYLE}>
+        <div className="modal-body">
           <ProfileFormSections
             form={form}
             patch={patch}
@@ -305,7 +264,7 @@ export default function ProfileEditorModal({
         </div>
 
         {/* Footer */}
-        <div style={FOOTER_STYLE}>
+        <div className="modal-footer">
           {domainProfile && isReadonlyProfile(domainProfile) && !clonedForEdit ? (
             <button className="btn btn-primary btn-sm" onClick={handleCopyAndEdit} disabled={saving} style={{ fontSize: '0.75rem' }}>
               Copy to editable profile

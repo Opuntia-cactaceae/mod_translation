@@ -4,6 +4,7 @@ import type { ApiKeyResponse, GameOption, FileHandlerOption, TestKeyResponse, Tr
 import { PathPicker } from '../components';
 import ProfileEditorModal from '../components/profiles/ProfileEditorModal';
 import ProviderModelsSection from '../components/settings/ProviderModelsSection';
+import ImportExportSection from '../components/settings/ImportExportSection';
 import {
   mapProfile, isReadonlyProfile, deduplicateProfiles, appendProfileUnique, removeProfile,
   type ProfileModel,
@@ -381,15 +382,27 @@ export default function Settings() {
             >
               {gamesOptionsLoaded && genericFileHandlers.length > 0
                 ? genericFileHandlers.map(h => (
-                    <option key={h.id} value={h.id}>{h.label} ({h.extensions.join(', ')})</option>
+                    <option key={h.id} value={h.id}>{h.label} ({h.extensions.length})</option>
                   ))
                 : <>
-                    <option value="plain_text">Plain Text (.txt)</option>
-                    <option value="json">JSON (.json)</option>
-                    <option value="yaml">YAML (.yml / .yaml)</option>
+                    <option value="plain_text">Plain Text</option>
+                    <option value="json">JSON</option>
+                    <option value="yaml">YAML</option>
                   </>
               }
             </select>
+            {/* Extension badges for the selected handler */}
+            {(() => {
+              const h = genericFileHandlers.find(fh => fh.id === getStr(settings, 'gs_generic_default_file_handler', 'plain_text'));
+              if (!h || h.extensions.length === 0) return null;
+              return (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.35rem' }}>
+                  {h.extensions.map(ext => (
+                    <span key={ext} className="badge badge-muted" style={{ textTransform: 'none', fontSize: '0.65rem' }}>{ext}</span>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>
@@ -558,6 +571,9 @@ export default function Settings() {
 
       {/* Provider Models */}
       <ProviderModelsSection />
+
+      {/* Import / Export */}
+      <ImportExportSection />
 
       {/* Translation Profiles */}
       <div className="card">
@@ -740,6 +756,7 @@ function renderSettingInput(
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
           <input
             type="checkbox"
+            className="form-checkbox"
             checked={!!val}
             onChange={e => onChange(key, e.target.checked)}
           />

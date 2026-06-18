@@ -68,7 +68,7 @@ export default function ProfileValidationPanel({
       {/* Grouped diagnostics */}
       {errors.length > 0 && (
         <div style={{ marginBottom: '0.3rem' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-error)', marginBottom: '0.15rem' }}>Errors</div>
+          <div className="subsection-title" style={{ color: 'var(--color-error)' }}>Errors</div>
           {errors.map((d, i) => (
             <DiagnosticRow key={i} diagnostic={d} />
           ))}
@@ -77,7 +77,7 @@ export default function ProfileValidationPanel({
 
       {warnings.length > 0 && (
         <div style={{ marginBottom: '0.3rem' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-warning)', marginBottom: '0.15rem' }}>Warnings</div>
+          <div className="subsection-title" style={{ color: 'var(--color-warning)' }}>Warnings</div>
           {warnings.map((d, i) => (
             <DiagnosticRow key={i} diagnostic={d} />
           ))}
@@ -86,7 +86,7 @@ export default function ProfileValidationPanel({
 
       {infos.length > 0 && (
         <div>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: '0.15rem' }}>Info</div>
+          <div className="subsection-title" style={{ color: 'var(--color-text-muted)' }}>Info</div>
           {infos.map((d, i) => (
             <DiagnosticRow key={i} diagnostic={d} />
           ))}

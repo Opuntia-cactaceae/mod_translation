@@ -652,7 +652,7 @@ export default function OutputFileEditor() {
             </button>
             {session.structured && (
               <label className="diag-toggle-label">
-                <input type="checkbox" checked={showAffectedRows} onChange={e => setShowAffectedRows(e.target.checked)} />
+                <input type="checkbox" className="form-checkbox" checked={showAffectedRows} onChange={e => setShowAffectedRows(e.target.checked)} />
                 Affected only
               </label>
             )}
@@ -837,7 +837,7 @@ export default function OutputFileEditor() {
               <div style={{ padding: '0.75rem 1rem' }}>
                 <div style={{ display: 'flex', gap: '1rem', minHeight: 400 }}>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-muted)' }}>
+                    <div className="subsection-title-muted">
                       Source (read-only)
                       {missingSource && <span style={{ marginLeft: '0.5rem', color: 'var(--color-warning)' }}>(missing)</span>}
                     </div>
@@ -849,7 +849,7 @@ export default function OutputFileEditor() {
                     />
                   </div>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-muted)' }}>
+                    <div className="subsection-title-muted">
                       Translated {rawTextDirty && <span style={{ color: 'var(--color-warning)' }}>(unsaved)</span>}
                     </div>
                     <textarea

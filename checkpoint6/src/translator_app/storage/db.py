@@ -866,6 +866,42 @@ class DatabaseService:
         except Exception:
             pass
 
+        # Migration: add rule_kind / token_type / opener_pattern /
+        # closer_pattern for databases created before the
+        # learned_protection_candidates table had them.
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "rule_kind TEXT NOT NULL DEFAULT 'atomic'"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "token_type TEXT NOT NULL DEFAULT 'custom_token'"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "opener_pattern TEXT NOT NULL DEFAULT ''"
+            )
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE learned_protection_candidates ADD COLUMN "
+                "closer_pattern TEXT NOT NULL DEFAULT ''"
+            )
+            conn.commit()
+        except Exception:
+            pass
+
         # Migration: add semantic_rank / is_markup_fragment /
         # shadowed_by_paired_candidate for databases created before the
         # learned_protection_candidates table had them.

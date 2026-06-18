@@ -181,7 +181,7 @@ export function PathPicker({ value, onChange, mode, extensions, label, placehold
           <div className="modal-content path-picker-modal" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span>Path Picker — {mode === 'file' ? 'Select File' : 'Select Directory'}</span>
-              <button className="btn btn-sm" onClick={handleClose} type="button">&times;</button>
+              <button className="modal-close" onClick={handleClose} type="button" aria-label="Close">&times;</button>
             </div>
 
             <div className="modal-body">

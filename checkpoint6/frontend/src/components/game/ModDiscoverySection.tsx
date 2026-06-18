@@ -104,25 +104,27 @@ export function ModDiscoverySection({ onModsDiscovered, hasMods }: ModDiscoveryS
           />
         </div>
         <div className="mod-discovery-actions">
-          {defaultModsDir && (
+          <div className="stellaris-discovery-actions">
+            {defaultModsDir && (
+              <button
+                className="btn btn-secondary stellaris-discovery-action-button"
+                onClick={() => {
+                  setScanPaths(defaultModsDir);
+                  setScanPathsDirty(true);
+                }}
+                type="button"
+              >
+                Use default mods folder
+              </button>
+            )}
             <button
-              className="btn btn-secondary"
-              onClick={() => {
-                setScanPaths(defaultModsDir);
-                setScanPathsDirty(true);
-              }}
-              type="button"
+              className="btn btn-primary stellaris-discovery-action-button"
+              onClick={handleDiscover}
+              disabled={loading}
             >
-              Use default mods folder
+              {loading ? 'Scanning...' : (hasMods ? 'Refresh / Rediscover' : 'Scan / Discover')}
             </button>
-          )}
-          <button
-            className="btn btn-primary"
-            onClick={handleDiscover}
-            disabled={loading}
-          >
-            {loading ? 'Scanning...' : (hasMods ? 'Refresh / Rediscover' : 'Scan / Discover')}
-          </button>
+          </div>
         </div>
         {defaultModsDir && (
           <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '0.5rem' }}>

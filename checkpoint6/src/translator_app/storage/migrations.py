@@ -11,7 +11,7 @@ from typing import Optional
 from translator_app.storage.db import DatabaseService
 
 
-CURRENT_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = 14
 
 # Migration registry: version -> list of SQL statements
 _MIGRATIONS: dict[int, list[str]] = {
@@ -212,6 +212,20 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_source ON pairing_project_pairs(project_id, source_file_id)",
         "CREATE INDEX IF NOT EXISTS idx_pairing_pairs_translated ON pairing_project_pairs(project_id, translated_file_id)",
         "CREATE INDEX IF NOT EXISTS idx_pairing_alignments_pair ON pairing_project_alignments(pair_id)",
+    ],
+    13: [
+        "ALTER TABLE pairing_project_alignments ADD COLUMN last_applied_at TEXT",
+    ],
+    14: [
+        # Phase 14: add rule_kind / token_type / opener_pattern /
+        # closer_pattern to learned_protection_candidates for databases
+        # created before the table DDL included them.  The discovery
+        # pipeline (learn_from_line_pairs) writes these columns via
+        # upsert_candidate_by_normalized and crashes on old databases.
+        "ALTER TABLE learned_protection_candidates ADD COLUMN rule_kind TEXT NOT NULL DEFAULT 'atomic'",
+        "ALTER TABLE learned_protection_candidates ADD COLUMN token_type TEXT NOT NULL DEFAULT 'custom_token'",
+        "ALTER TABLE learned_protection_candidates ADD COLUMN opener_pattern TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE learned_protection_candidates ADD COLUMN closer_pattern TEXT NOT NULL DEFAULT ''",
     ],
 }
 

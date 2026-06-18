@@ -178,7 +178,11 @@ class GroqRuntime(ModelRuntime):
                 delay = compute_retry_delay_sec(error_type, attempt, retry_after)
                 time.sleep(delay)
 
-        error_msg = str(last_exception) if last_exception else "Unknown error"
+        exc_name = type(last_exception).__name__ if last_exception else ""
+        error_msg = (
+            f"[{error_type}] {exc_name}: {last_exception}"
+            if last_exception else f"[{error_type}] Unknown error"
+        )
         outcome = self._determine_outcome(last_exception, error_type) if last_exception else ResponseOutcomeType.UNKNOWN_ERROR
 
         return RuntimeCallResult(
@@ -203,7 +207,9 @@ class GroqRuntime(ModelRuntime):
             return ResponseOutcomeType.RATE_LIMITED
         if error_type == "timeout":
             return ResponseOutcomeType.TIMEOUT
-        if error_type == "billing":
+        if error_type in ("billing", "auth"):
+            return ResponseOutcomeType.TRANSPORT_ERROR
+        if error_type in ("dns", "tls", "connection"):
             return ResponseOutcomeType.TRANSPORT_ERROR
         return ResponseOutcomeType.UNKNOWN_ERROR
 

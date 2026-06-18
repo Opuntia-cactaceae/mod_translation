@@ -125,7 +125,7 @@ export function TranslationPreviewModal({
       <div className="modal-content preview-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <span>Translation preview: {previewState.name}</span>
-          <button className="btn btn-sm" onClick={onClose}>&times;</button>
+          <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
         </div>
         <div className="modal-body">
           {previewLoading && (
